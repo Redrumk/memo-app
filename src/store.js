@@ -1,3 +1,5 @@
+import { toMarkdownInline } from './rich.js';
+
 // 데이터 저장소: 이 기기(IndexedDB, 안 되면 localStorage)에 항상 저장하고, 동기화는 sync.js가 담당한다.
 // 각 항목의 dirty=서버에 아직 안 올라감, synced=서버에 한 번이라도 올라감, shared=다른 사람 소유
 
@@ -394,19 +396,20 @@ export function importData(obj) {
   return added;
 }
 
+function mdInline(b) { return b.html ? toMarkdownInline(b.html) : b.text || ''; }
 export function toMarkdown(n) {
   const out = [];
   let num = 0;
   if (n.title) out.push(`# ${n.title}`, '');
   for (const b of n.blocks || []) {
     const pad = '  '.repeat(b.indent || 0);
-    const t = pad + (b.text || '');
+    const t = pad + mdInline(b);
     num = b.type === 'number' ? num + 1 : 0;
     switch (b.type) {
       case 'h1': out.push(`## ${t}`); break;
       case 'h2': out.push(`### ${t}`); break;
-      case 'bullet': out.push(`${pad}- ${b.text || ''}`); break;
-      case 'toggle': out.push(`${pad}- ▸ ${b.text || ''}`); break;
+      case 'bullet': out.push(`${pad}- ${mdInline(b)}`); break;
+      case 'toggle': out.push(`${pad}- ▸ ${mdInline(b)}`); break;
       case 'table': {
         const rows = b.rows || [];
         rows.forEach((r, i) => { out.push(`| ${r.join(' | ')} |`); if (i === 0) out.push(`| ${r.map(() => '---').join(' | ')} |`); });

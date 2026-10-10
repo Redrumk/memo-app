@@ -1,6 +1,7 @@
 // 블록 에디터: 블록마다 contenteditable 한 줄. 서식 없는 텍스트만 저장한다.
 import { el, toast, actionSheet, promptDialog } from './ui.js';
 import { newBlock } from './store.js';
+import { sanitize, FMT_SEL } from './rich.js';
 
 const TEXT_TYPES = new Set(['p', 'h1', 'h2', 'bullet', 'number', 'todo', 'quote', 'callout', 'toggle']);
 const LIST_TYPES = new Set(['bullet', 'number', 'todo']);
@@ -39,6 +40,33 @@ const EDITABLE = (() => {
 })();
 
 const clean = (s) => s.replace(/ /g, ' ');
+
+// 글자 꾸미기 정리기는 rich.js에 있다
+const hasMarkup = (h) => /<[a-z]/i.test(h || '');
+const esc = (s) => String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+const htmlOf = (b) => b.html || esc(b.text || '');
+function setMerged(b, html) { const h = sanitize(html); if (hasMarkup(h)) b.html = h; else delete b.html; }
+function readInto(b, t) {
+  b.text = clean(t.textContent);
+  if (t.querySelector(FMT_SEL)) { const h = sanitize(t.innerHTML); if (hasMarkup(h)) { b.html = h; return; } }
+  delete b.html;
+}
+function setContent(t, b) { if (b.html) t.innerHTML = sanitize(b.html); else t.textContent = b.text || ''; }
+function locate(node, off) {
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+  let n; let rem = off;
+  while ((n = walker.nextNode())) { if (rem <= n.length) return [n, rem]; rem -= n.length; }
+  return [node, node.childNodes.length];
+}
+// 커서 뒤 내용을 잘라낸다 (서식 유지)
+function cutAfter(t, off) {
+  const r = document.createRange();
+  const [n, o] = locate(t, off);
+  r.setStart(n, o); r.setEnd(t, t.childNodes.length);
+  const div = document.createElement('div');
+  div.append(r.extractContents());
+  return { text: clean(div.textContent), html: div.querySelector(FMT_SEL) ? sanitize(div.innerHTML) : '', nodes: div };
+}
 
 function setCaret(node, offset) {
   const sel = window.getSelection();
@@ -294,10 +322,10 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
     if (b.type === 'bullet') row.append(el('span', { class: 'bullet-dot', 'aria-hidden': 'true' }, '•'));
     if (b.type === 'number') row.append(el('span', { class: 'num-mark', 'aria-hidden': 'true' }, '1.'));
     const t = el('div', {
-      class: 'text', contenteditable: readOnly ? 'false' : EDITABLE,
+      class: 'text', contenteditable: readOnly ? 'false' : 'true',
       'data-placeholder': PLACEHOLDER[b.type] || '', spellcheck: 'false',
     });
-    t.textContent = b.text || '';
+    setContent(t, b);
     row.append(t);
     return row;
   }
@@ -447,7 +475,7 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
     for (const [re, type] of SHORTCUTS) {
       const m = text.match(re);
       if (m) {
-        b.type = type; b.text = text.slice(m[0].length);
+        b.type = type; b.text = text.slice(m[0].length); delete b.html;
         if (type === 'todo') b.checked = /x/i.test(m[0]);
         replaceRow(b); focusBlock(b.id, 'start'); save();
         return true;
@@ -470,7 +498,8 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
       insertBefore(id, nb); b.text = text; focusBlock(id, 'start'); save();
       return;
     }
-    b.text = text.slice(0, off); t.textContent = b.text;
+    const tail = cutAfter(t, off);
+    readInto(b, t); setContent(t, b);
     let nType = listType; let nIndent = b.indent || 0; let afterId = id;
     if (b.type === 'toggle') {
       if (b.open !== false) { nType = 'p'; nIndent += 1; }
@@ -482,7 +511,8 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
         afterId = blocks()[j - 1].id;
       }
     }
-    const nb = newBlock(nType, text.slice(off)); if (nType === 'todo') nb.checked = false;
+    const nb = newBlock(nType, tail.text); if (nType === 'todo') nb.checked = false;
+    if (hasMarkup(tail.html)) nb.html = tail.html;
     if (nIndent) nb.indent = Math.min(4, nIndent);
     insertAfter(afterId, nb); focusBlock(nb.id, 'start'); save();
   }
@@ -594,8 +624,10 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
     const prev = blocks()[i - 1]; if (!prev) return false;
     if (!TEXT_TYPES.has(prev.type)) { removeBlock(prev.id); save(); return true; }
     const plen = (prev.text || '').length;
+    const merged = htmlOf(prev) + htmlOf(b);
     prev.text = (prev.text || '') + (b.text || '');
-    const pt = textOf(prev.id); if (pt) pt.textContent = prev.text;
+    setMerged(prev, merged);
+    const pt = textOf(prev.id); if (pt) setContent(pt, prev);
     removeBlock(id); focusBlock(prev.id, plen); save();
     return true;
   }
@@ -676,7 +708,7 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
     const it = items[index];
     closeSlash();
     const b = find(blockId); if (!b) return;
-    b.text = '';
+    b.text = ''; delete b.html;
     const t = textOf(blockId); if (t) t.textContent = '';
     setType(blockId, it.type);
     save();
@@ -697,7 +729,7 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
     const b = find(id); if (!b) return;
     if (t.textContent === '' && t.firstChild) t.textContent = '';
     const text = clean(t.textContent);
-    b.text = text;
+    readInto(b, t);
     if (!e.isComposing && b.type === 'p' && applyShortcut(b, text)) return;
     if (!text.startsWith('/')) slashDismissed = null;
     if (/^\/[^\s/]{0,12}$/.test(text)) openOrUpdateSlash(b, text.slice(1));
@@ -717,7 +749,7 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
       splitAt(id);
     } else if (e.inputType === 'deleteContentBackward') {
       if (collapsed() && caretOffset(t) === 0 && backspaceAtStart(id)) e.preventDefault();
-    } else if (e.inputType.startsWith('format')) {
+    } else if (e.inputType.startsWith('format') && !['formatBold', 'formatItalic', 'formatUnderline', 'formatStrikeThrough'].includes(e.inputType)) {
       e.preventDefault();
     }
   }
@@ -754,7 +786,10 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
     const coll = collapsed();
     const mod = e.metaKey || e.ctrlKey;
 
-    if (mod && ['b', 'i', 'u'].includes(e.key.toLowerCase())) { e.preventDefault(); return; }
+    const key = e.key.toLowerCase();
+    if (mod && key === 'e') { e.preventDefault(); if (selText()) format('code'); return; }
+    if (mod && key === 'k') { e.preventDefault(); if (selText()) format('link'); return; }
+    if (mod && e.shiftKey && key === 's') { e.preventDefault(); if (selText()) format('strikeThrough'); return; }
     if (e.key === 'Tab') { e.preventDefault(); indentBlock(id, e.shiftKey ? -1 : 1); return; }
     if (e.key === 'Enter' && mod && b.type === 'todo') {
       e.preventDefault(); b.checked = !b.checked; replaceRow(b); focusBlock(id, off); save(); return;
@@ -764,7 +799,10 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
       const next = blocks()[i + 1]; if (!next) return;
       e.preventDefault();
       if (!TEXT_TYPES.has(next.type)) { removeBlock(next.id); save(); return; }
-      b.text = clean(t.textContent) + (next.text || ''); t.textContent = b.text;
+      readInto(b, t);
+      const merged = htmlOf(b) + htmlOf(next);
+      b.text = (b.text || '') + (next.text || '');
+      setMerged(b, merged); setContent(t, b);
       removeBlock(next.id); focusBlock(id, len); save();
       return;
     }
@@ -794,9 +832,10 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
       return;
     }
     const b = find(id);
-    const cur = clean(t.textContent); const off = caretOffset(t);
-    const after = cur.slice(off);
-    b.text = cur.slice(0, off) + lines[0]; t.textContent = b.text;
+    const off = caretOffset(t);
+    const tail = cutAfter(t, off);
+    t.append(document.createTextNode(lines[0]));
+    readInto(b, t);
     let lastId = id;
     for (const line of lines.slice(1)) {
       if (!line.trim()) continue;
@@ -811,11 +850,83 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
       lastId = insertAfter(lastId, nb).id;
     }
     const last = find(lastId);
-    const endLen = (last.text || '').length;
-    last.text = (last.text || '') + after;
-    textOf(lastId).textContent = last.text;
+    const lt = textOf(lastId);
+    const endLen = lt.textContent.length;
+    lt.append(...tail.nodes.childNodes);
+    readInto(last, lt); setContent(lt, last);
     focusBlock(lastId, endLen); save();
   }
+
+  // ---------- 글자 꾸미기 막대 ----------
+  try { document.execCommand('styleWithCSS', false, false); } catch { /* 무시 */ }
+  const fmtBar = el('div', { class: 'fmt-bar', role: 'toolbar', 'aria-label': '글자 꾸미기' });
+  fmtBar.hidden = true;
+  for (const [cmd, label, aria] of [['bold', 'B', '굵게 (Cmd/Ctrl+B)'], ['italic', 'I', '기울임 (Cmd/Ctrl+I)'], ['underline', 'U', '밑줄 (Cmd/Ctrl+U)'],
+    ['strikeThrough', 'S', '취소선 (Cmd/Ctrl+Shift+S)'], ['code', '</>', '코드 (Cmd/Ctrl+E)'], ['link', '링크', '링크 (Cmd/Ctrl+K)']]) {
+    const btn = el('button', { type: 'button', class: `fmt-${cmd}`, 'aria-label': aria, title: aria }, label);
+    btn.addEventListener('pointerdown', (e) => e.preventDefault());
+    btn.addEventListener('mousedown', (e) => e.preventDefault());
+    btn.addEventListener('click', () => format(cmd));
+    fmtBar.append(btn);
+  }
+  document.body.append(fmtBar);
+  function selText() {
+    const s = window.getSelection();
+    if (!s.rangeCount || s.isCollapsed) return null;
+    const host = (n) => (n && (n.nodeType === 1 ? n : n.parentElement))?.closest?.('.text');
+    const t = host(s.anchorNode);
+    if (!t || !blocksEl.contains(t) || host(s.focusNode) !== t) return null;
+    return t;
+  }
+  let fmtBusy = false;
+  function updateFmtBar() {
+    if (fmtBusy) return;
+    const t = readOnly ? null : selText();
+    if (!t) { fmtBar.hidden = true; return; }
+    fmtBar.hidden = false;
+    if (window.matchMedia('(max-width: 759px)').matches) { fmtBar.style.top = ''; fmtBar.style.left = ''; return; }
+    const r = window.getSelection().getRangeAt(0).getBoundingClientRect();
+    const w = fmtBar.offsetWidth || 240;
+    fmtBar.style.top = `${Math.max(8, r.top - 46)}px`;
+    fmtBar.style.left = `${Math.max(8, Math.min(r.left + r.width / 2 - w / 2, window.innerWidth - w - 8))}px`;
+  }
+  document.addEventListener('selectionchange', () => requestAnimationFrame(updateFmtBar));
+  function toggleCode() {
+    const s = window.getSelection(); const r = s.getRangeAt(0);
+    const node = r.commonAncestorContainer;
+    const c = (node.nodeType === 1 ? node : node.parentElement).closest('code');
+    if (c && blocksEl.contains(c)) { c.replaceWith(...c.childNodes); return; }
+    const code = document.createElement('code');
+    code.append(r.extractContents()); r.insertNode(code);
+    const nr = document.createRange(); nr.selectNodeContents(code);
+    s.removeAllRanges(); s.addRange(nr);
+  }
+  async function format(cmd) {
+    const t = selText(); if (!t) return;
+    if (cmd === 'code') toggleCode();
+    else if (cmd === 'link') {
+      const s = window.getSelection(); const range = s.getRangeAt(0).cloneRange();
+      fmtBusy = true; fmtBar.hidden = true;
+      const url = await promptDialog('링크 주소', 'https://', { ok: '적용' });
+      fmtBusy = false;
+      t.focus(); s.removeAllRanges(); s.addRange(range);
+      const u = (url || '').trim();
+      if (!/^https?:\/\/\S+/.test(u)) return;
+      document.execCommand('createLink', false, u);
+    } else document.execCommand(cmd, false, null);
+    t.dispatchEvent(new Event('input', { bubbles: true }));
+    updateFmtBar();
+  }
+  // 링크: 편집 중이 아닐 때 누르거나 Cmd/Ctrl+클릭하면 연다
+  let downFocused = null;
+  blocksEl.addEventListener('pointerdown', (e) => {
+    const t = e.target.closest && e.target.closest('.text');
+    downFocused = t && document.activeElement === t ? t : null;
+  }, true);
+  blocksEl.addEventListener('click', (e) => {
+    const a = e.target.closest && e.target.closest('.text a[href]'); if (!a) return;
+    if (e.metaKey || e.ctrlKey || readOnly || downFocused !== a.closest('.text')) { e.preventDefault(); window.open(a.href, '_blank', 'noopener'); }
+  });
 
   blocksEl.addEventListener('input', onInput);
   blocksEl.addEventListener('compositionend', onInput);
