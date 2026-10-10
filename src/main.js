@@ -238,6 +238,14 @@ function scheduleRender() {
 
 store.subscribe((kind, ids) => {
   if (kind === 'save-error') { toast('기기 저장 공간이 부족합니다. 큰 이미지를 지우거나 동기화를 켜세요.'); return; }
+  if (kind === 'reset') {
+    ui.pageId = null; ui.recent = []; editor.close(); showEditor(null); setView('tree'); renderAll();
+    return;
+  }
+  if (kind === 'conflict') {
+    toast(`같은 페이지를 두 기기에서 고쳐서, 다른 기기 내용은 '(다른 기기 버전)' 페이지로 따로 보관했습니다`);
+    return;
+  }
   if (kind === 'remote') {
     if (ui.pageId && ids && ids.includes(ui.pageId)) {
       const n = store.getNote(ui.pageId);
@@ -493,7 +501,18 @@ function openSettings() {
       box.append(el('p', { class: 'note-text' }, `${sync.user().email} 계정으로 동기화 중입니다.`),
         el('div', { class: 'form' }, el('div', { class: 'row' },
           el('button', { class: 'btn primary', type: 'button', onclick: async () => { await sync.syncNow(); toast('동기화했습니다'); } }, '지금 동기화'),
-          el('button', { class: 'btn', type: 'button', onclick: async () => { await sync.signOut(); draw(); } }, '로그아웃'))));
+          el('button', {
+            class: 'btn', type: 'button',
+            onclick: async () => {
+              const how = await actionSheet('로그아웃', [
+                { label: '페이지를 이 기기에 남기고 로그아웃', value: 'keep' },
+                { label: '이 기기에서 페이지를 지우고 로그아웃', value: 'wipe', danger: true },
+              ], '지워도 서버에 올라간 페이지는 다시 로그인하면 돌아옵니다.');
+              if (!how) return;
+              await sync.signOut(how === 'wipe');
+              draw(); toast('로그아웃했습니다');
+            },
+          }, '로그아웃'))));
     }
     box.append(el('h4', {}, '데이터'),
       el('div', { class: 'form' }, el('div', { class: 'row' },
@@ -698,7 +717,10 @@ function init() {
   }
   captureJoinParam();
   renderBackupBanner();
-  sync.init({ onStatus, onUser });
+  sync.init({
+    onStatus, onUser,
+    confirmAccountSwitch: () => confirmDialog('이 기기에는 다른 계정으로 쓰던 페이지가 있습니다. 이 계정으로 로그인하면 이 기기의 페이지를 지우고 이 계정의 페이지를 받아옵니다.\n지우기 전에 설정에서 백업해 두는 것을 권합니다.', { ok: '지우고 로그인', cancel: '로그인 취소', danger: true }),
+  });
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});
   }

@@ -387,9 +387,36 @@ export function markClean(kind, snaps) {
     const it = state[kind].find((x) => x.id === s.id);
     if (!it) continue;
     it.synced = true;
+    it.baseAt = s.updated_at; // 서버에 있는 버전의 시각
     if (it.updated_at === s.updated_at) it.dirty = false;
   }
   persist();
+}
+export const getMeta = (k) => state.meta[k];
+export function setMeta(k, v) { state.meta[k] = v; persist(); }
+
+// 계정을 바꾸거나 로그아웃하며 지울 때: 이 기기의 페이지·사진을 비우고 처음 상태로
+export async function resetLocal() {
+  if (db) { try { for (const k of await idbKeys('images')) await idbDel(k, 'images'); } catch (e) { console.warn(e); } }
+  imgCache.clear();
+  state = seed();
+  addDemo(state.folders[0].id);
+  state.meta.demo2 = true;
+  flush();
+  listeners.forEach((fn) => fn('reset'));
+}
+
+// 두 번째 기기에서 처음 로그인할 때: 손대지 않은 둘러보기 페이지와 빈 기본 섹션은 올리지 않고 버린다
+const DEMO_TITLES = new Set(['Memo 둘러보기', '블록 사용법', '이번 주 할 일']);
+export function dropPristineDemo() {
+  const pristine = (x) => !x.synced && x.created_at === x.updated_at;
+  const drop = new Set(state.notes.filter((n) => DEMO_TITLES.has(n.title) && pristine(n)).map((n) => n.id));
+  state.notes = state.notes.filter((n) => !drop.has(n.id));
+  const emptySeed = state.folders.filter((f) => pristine(f) && !state.notes.some((n) => n.folder_id === f.id));
+  const fdrop = new Set(emptySeed.map((f) => f.id));
+  state.folders = state.folders.filter((f) => !fdrop.has(f.id));
+  if (drop.size || fdrop.size) { persist(); listeners.forEach((fn) => fn('remote', [...drop, ...fdrop])); }
+  return drop.size + fdrop.size;
 }
 export function clearPurged(ids) {
   state.meta.purged = state.meta.purged.filter((id) => !ids.includes(id));
@@ -399,8 +426,48 @@ export function clearPurged(ids) {
 const iso = (v) => (v ? new Date(v).toISOString() : now());
 
 // 서버 데이터 병합: 더 최근에 수정된 쪽이 이긴다(last-write-wins)
-export function mergeRemote(rFolders, rNotes, myId) {
+function conflictCopy(r) {
+  const t = now();
+  const copy = {
+    ...strip(r), id: uid(), owner_id: undefined, title: `${(r.title || '').trim() || '제목 없음'} (다른 기기 버전)`, pinned: false,
+    created_at: t, updated_at: t, dirty: true, synced: false, baseAt: undefined,
+    blocks: JSON.parse(JSON.stringify(r.blocks || [])).map((b) => ({ ...b, id: uid() })),
+  };
+  state.notes.push(copy);
+  return copy.id;
+}
+// 올릴 버전은 서버에 있던 버전보다 항상 새것으로 표시한다 (기기마다 시계가 조금씩 달라도 순서가 꼬이지 않게)
+export function bumpStale() {
+  for (const kind of ['folders', 'notes']) {
+    for (const it of state[kind]) {
+      if (it.dirty && it.baseAt && it.updated_at <= it.baseAt) it.updated_at = new Date(Date.parse(it.baseAt) + 1).toISOString();
+    }
+  }
+}
+// 올리기 직전 검사: 내가 고친 페이지를 그사이 다른 기기도 고쳤으면, 덮어쓰기 전에 그쪽 버전을 사본으로 남긴다
+export function preserveConflicts(rows) {
+  const changed = []; const names = [];
+  for (const r of rows || []) {
+    const local = getNote(r.id);
+    const at = iso(r.updated_at);
+    if (local && local.dirty && local.baseAt && at > local.baseAt) {
+      changed.push(conflictCopy({ ...r, updated_at: at }));
+      names.push(r.title || '제목 없음');
+      local.baseAt = at;
+    }
+  }
+  if (changed.length) {
+    persist();
+    listeners.forEach((fn) => fn('remote', changed));
+    listeners.forEach((fn) => fn('conflict', names));
+  }
+}
+
+// 서버 데이터 병합. full=true면 서버 전체 목록이라 서버에 없는 항목을 지울 수 있다.
+// 두 기기가 같은 페이지를 동시에 고쳤으면 내 것은 그대로 두고, 다른 기기 버전을 사본으로 남긴다(아무것도 사라지지 않게).
+export function mergeRemote(rFolders, rNotes, myId, { full = true } = {}) {
   const changed = new Set();
+  const conflicts = [];
   const purged = new Set(state.meta.purged);
   const locked = lockFn();
   const apply = (kind, rows) => {
@@ -411,15 +478,19 @@ export function mergeRemote(rFolders, rNotes, myId) {
       seen.add(r0.id);
       const r = { ...r0, created_at: iso(r0.created_at), updated_at: iso(r0.updated_at), shared: !!myId && r0.owner_id !== myId };
       const local = arr.find((x) => x.id === r.id);
-      if (!local) { arr.push({ ...r, dirty: false, synced: true }); changed.add(r.id); continue; }
+      if (!local) { arr.push({ ...r, dirty: false, synced: true, baseAt: r.updated_at }); changed.add(r.id); continue; }
       local.synced = true; local.shared = r.shared; local.owner_id = r.owner_id;
-      if (kind === 'notes' && locked === local.id) continue;
-      if (local.dirty && local.updated_at >= r.updated_at) continue;
-      if (local.updated_at !== r.updated_at || local.dirty) {
-        Object.assign(local, r, { dirty: false });
-        changed.add(r.id);
+      if (r.updated_at === local.baseAt) continue; // 마지막 동기화 이후 서버 쪽 변화 없음
+      if (local.baseAt && r.updated_at < local.baseAt) continue;
+      if (local.dirty) {
+        if (kind === 'notes' && local.baseAt) { conflicts.push(r); local.baseAt = r.updated_at; continue; }
+        if (local.updated_at >= r.updated_at) { local.baseAt = r.updated_at; continue; }
       }
+      if (kind === 'notes' && locked === local.id) continue; // 편집이 끝난 뒤 다음 동기화에서 반영
+      Object.assign(local, r, { dirty: false, baseAt: r.updated_at });
+      changed.add(r.id);
     }
+    if (!full) return;
     // 서버에서 사라진 항목(다른 기기에서 영구 삭제, 공유 해제)은 로컬에서도 지운다
     const keep = arr.filter((x) => !(x.synced && !x.dirty && !seen.has(x.id) && !(kind === 'notes' && locked === x.id)));
     if (keep.length !== arr.length) arr.filter((x) => !keep.includes(x)).forEach((x) => changed.add(x.id));
@@ -427,13 +498,15 @@ export function mergeRemote(rFolders, rNotes, myId) {
   };
   apply('folders', rFolders || []);
   apply('notes', rNotes || []);
+  for (const r of conflicts) changed.add(conflictCopy(r));
   persist();
   if (changed.size) listeners.forEach((fn) => fn('remote', [...changed]));
+  if (conflicts.length) listeners.forEach((fn) => fn('conflict', conflicts.map((r) => r.title || '제목 없음')));
   return changed.size;
 }
 
 // ---------- 내보내기/가져오기 ----------
-const strip = ({ dirty, synced, shared, linked, ...rest }) => rest;
+const strip = ({ dirty, synced, shared, linked, baseAt, ...rest }) => rest;
 // 백업 파일에는 사진도 함께 넣는다
 export async function exportData() {
   const images = {};

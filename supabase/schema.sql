@@ -80,7 +80,10 @@ drop policy if exists folders_update on public.folders;
 drop policy if exists folders_delete on public.folders;
 create policy folders_select on public.folders for select to authenticated using (public.can_access_folder(id));
 create policy folders_insert on public.folders for insert to authenticated with check (owner_id = auth.uid());
-create policy folders_update on public.folders for update to authenticated using (public.can_access_folder(id)) with check (public.can_access_folder(id));
+-- 공유받은 사람은 이름 변경은 가능하지만 섹션 삭제(deleted=true)는 소유자만
+create policy folders_update on public.folders for update to authenticated
+  using (public.can_access_folder(id))
+  with check (owner_id = auth.uid() or (public.can_access_folder(id) and deleted = false));
 create policy folders_delete on public.folders for delete to authenticated using (owner_id = auth.uid());
 
 -- notes: 내 메모 + 내가 접근 가능한 폴더의 메모
