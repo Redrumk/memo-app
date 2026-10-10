@@ -54,7 +54,8 @@ export function scheduleSync() {
 
 const folderRow = (f) => ({ id: f.id, name: f.name, created_at: f.created_at, updated_at: f.updated_at, deleted: !!f.deleted });
 const noteRow = (n) => ({
-  id: n.id, folder_id: n.folder_id || null, title: n.title || '', blocks: n.blocks || [],
+  id: n.id, folder_id: n.folder_id || null, parent_id: n.parent_id || null, icon: n.icon || '', cover: n.cover || '',
+  title: n.title || '', blocks: n.blocks || [],
   pinned: !!n.pinned, created_at: n.created_at, updated_at: n.updated_at, deleted: !!n.deleted,
 });
 

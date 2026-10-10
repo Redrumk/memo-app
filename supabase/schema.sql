@@ -21,7 +21,12 @@ create table if not exists public.notes (
   updated_at  timestamptz not null default now(),
   deleted     boolean not null default false
 );
+-- 페이지 계층·아이콘·커버 (이전 버전 테이블에도 안전하게 추가)
+alter table public.notes add column if not exists parent_id uuid;
+alter table public.notes add column if not exists icon text not null default '';
+alter table public.notes add column if not exists cover text not null default '';
 create index if not exists notes_folder_idx on public.notes(folder_id);
+create index if not exists notes_parent_idx on public.notes(parent_id);
 create index if not exists notes_owner_idx on public.notes(owner_id);
 
 -- 공유 폴더에 참여한 사람

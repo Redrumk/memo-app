@@ -1,25 +1,27 @@
 // 블록 에디터: 블록마다 contenteditable 한 줄. 서식 없는 텍스트만 저장한다.
-import { el, toast } from './ui.js';
+import { el, toast, actionSheet } from './ui.js';
 import { newBlock } from './store.js';
 
-const TEXT_TYPES = new Set(['p', 'h1', 'h2', 'bullet', 'number', 'todo', 'quote']);
+const TEXT_TYPES = new Set(['p', 'h1', 'h2', 'bullet', 'number', 'todo', 'quote', 'callout']);
 const LIST_TYPES = new Set(['bullet', 'number', 'todo']);
 
 export const BLOCK_TYPES = [
   { type: 'p', label: '텍스트', hint: '일반 문단', icon: 'T', keys: ['text', 'p', '텍스트', '본문'] },
+  { type: 'page', label: '페이지', hint: '이 안에 하위 페이지 만들기', icon: '▤', keys: ['page', 'sub', '페이지', '하위'] },
   { type: 'h1', label: '제목', hint: '큰 제목', icon: 'H1', keys: ['h1', 'heading', '제목'] },
   { type: 'h2', label: '소제목', hint: '작은 제목', icon: 'H2', keys: ['h2', '소제목'] },
   { type: 'bullet', label: '목록', hint: '글머리 기호', icon: '•', keys: ['list', 'bullet', 'ul', '목록'] },
   { type: 'number', label: '번호 목록', hint: '1. 2. 3.', icon: '1.', keys: ['number', 'ol', 'num', '번호'] },
   { type: 'todo', label: '체크리스트', hint: '할 일', icon: '☐', keys: ['todo', 'check', '체크', '할일'] },
   { type: 'quote', label: '인용', hint: '인용문', icon: '❝', keys: ['quote', '인용'] },
+  { type: 'callout', label: '콜아웃', hint: '아이콘이 있는 강조 상자', icon: '💡', keys: ['callout', 'note', '콜아웃', '강조'] },
   { type: 'divider', label: '구분선', hint: '가로줄', icon: '—', keys: ['divider', 'hr', 'line', '구분'] },
   { type: 'image', label: '이미지', hint: '사진 첨부', icon: '▣', keys: ['image', 'img', 'photo', '이미지', '사진'] },
 ];
 
-const TOOLBAR = [['p', '본문'], ['h1', '제목'], ['h2', '소제목'], ['bullet', '목록'], ['number', '번호'], ['todo', '체크'], ['quote', '인용'], ['divider', '구분선'], ['image', '사진']];
+const TOOLBAR = [['page', '페이지'], ['p', '본문'], ['h1', '제목'], ['h2', '소제목'], ['bullet', '목록'], ['number', '번호'], ['todo', '체크'], ['quote', '인용'], ['callout', '콜아웃'], ['divider', '구분선'], ['image', '사진']];
 
-const PLACEHOLDER = { p: "입력하거나 '/'로 블록 선택", h1: '제목', h2: '소제목', bullet: '목록', number: '목록', todo: '할 일', quote: '인용' };
+const PLACEHOLDER = { p: "입력하거나 '/'로 블록 선택", h1: '제목', h2: '소제목', bullet: '목록', number: '목록', todo: '할 일', quote: '인용', callout: '내용 입력' };
 
 const SHORTCUTS = [
   [/^#\s/, 'h1'], [/^##\s/, 'h2'], [/^[-*•]\s/, 'bullet'], [/^1[.)]\s/, 'number'], [/^\[[\sxX]?\]\s/, 'todo'], [/^>\s/, 'quote'],
@@ -82,7 +84,7 @@ async function fileToDataURL(file, max = 1600) {
   } finally { URL.revokeObjectURL(url); }
 }
 
-export function createEditor({ blocksEl, titleEl, toolbarEl, onChange }) {
+export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {} }) {
   let note = null;
   let readOnly = false;
   let activeId = null;
@@ -98,7 +100,40 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange }) {
 
   // ---------- 렌더링 ----------
   function renderBlock(b) {
+    const row = buildRow(b);
+    if (!readOnly) row.prepend(gutter(b.id));
+    return row;
+  }
+  // 블록 왼쪽: + (아래에 블록 추가), ⋮⋮ (끌어서 이동 / 눌러서 메뉴)
+  function gutter(id) {
+    const plus = el('button', { type: 'button', class: 'g-btn', 'aria-label': '아래에 블록 추가', title: '아래에 블록 추가' }, '+');
+    plus.addEventListener('mousedown', (e) => e.preventDefault());
+    plus.addEventListener('click', () => { const nb = insertAfter(id, newBlock()); focusBlock(nb.id, 'start'); save(); });
+    const handle = el('button', { type: 'button', class: 'g-btn g-handle', 'aria-label': '끌어서 이동, 눌러서 메뉴', title: '끌어서 이동 · 눌러서 메뉴' }, '⋮⋮');
+    handle.addEventListener('pointerdown', (e) => startDrag(e, id));
+    return el('div', { class: 'gutter', contenteditable: 'false' }, plus, handle);
+  }
+  const pageTitle = (p) => (p && !p.deleted ? (p.title || '').trim() || '제목 없음' : '삭제된 페이지');
+  function buildRow(b) {
     const row = el('div', { class: `block block-${b.type}`, 'data-id': b.id });
+    if (b.type === 'page') {
+      row.tabIndex = 0;
+      const p = hooks.getPage ? hooks.getPage(b.page_id) : null;
+      row.append(el('button', {
+        type: 'button', class: 'page-link',
+        onclick: () => { const q = hooks.getPage && hooks.getPage(b.page_id); if (q && !q.deleted && hooks.openPage) hooks.openPage(b.page_id); },
+      }, el('span', { class: 'page-link-ico' }, (p && p.icon) || '📄'), el('span', { class: 'page-link-title' }, pageTitle(p))));
+      return row;
+    }
+    if (b.type === 'callout') {
+      const ic = el('button', { type: 'button', class: 'callout-ico', 'aria-label': '아이콘 바꾸기', contenteditable: 'false' }, b.icon || '💡');
+      ic.addEventListener('mousedown', (e) => e.preventDefault());
+      ic.addEventListener('click', () => {
+        if (readOnly || !hooks.pickEmoji) return;
+        hooks.pickEmoji((e) => { b.icon = e || '💡'; ic.textContent = b.icon; save(); });
+      });
+      row.append(ic);
+    }
     if (b.type === 'divider') { row.tabIndex = 0; row.append(el('hr')); return row; }
     if (b.type === 'image') {
       row.tabIndex = 0;
@@ -186,6 +221,15 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange }) {
   function setType(id, type, toggle = false) {
     const b = find(id); if (!b) return;
     if (type === 'image') { pickImage(id); return; }
+    if (type === 'page') {
+      if (!hooks.createSubpage || !note) return;
+      const child = hooks.createSubpage(note.id);
+      if (TEXT_TYPES.has(b.type) && !(b.text || '').trim()) { b.type = 'page'; b.page_id = child.id; b.text = ''; delete b.checked; replaceRow(b); }
+      else insertAfter(id, { ...newBlock('page'), page_id: child.id });
+      save();
+      if (hooks.openPage) hooks.openPage(child.id, { focus: 'title' });
+      return;
+    }
     if (type === 'divider') {
       let divId = id;
       if (TEXT_TYPES.has(b.type) && !(b.text || '').trim()) { b.type = 'divider'; b.text = ''; delete b.checked; replaceRow(b); }
@@ -200,6 +244,7 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange }) {
     const off = t && document.activeElement === t ? caretOffset(t) : (b.text || '').length;
     b.type = toggle && b.type === type && type !== 'p' ? 'p' : type;
     if (b.type === 'todo') b.checked = !!b.checked; else delete b.checked;
+    if (b.type === 'callout' && !b.icon) b.icon = '💡';
     replaceRow(b); focusBlock(id, off); save();
   }
 
@@ -255,6 +300,74 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange }) {
     focusBlock(id, off);
     row.scrollIntoView({ block: 'nearest' });
     save();
+  }
+
+  // 핸들 끌기: 놓은 위치로 이동, 움직이지 않고 떼면 블록 메뉴
+  function startDrag(e, id) {
+    if (readOnly || e.button > 0) return;
+    e.preventDefault();
+    const startY = e.clientY;
+    let dragging = false; let target = null;
+    const line = el('div', { class: 'drop-line' });
+    const onMove = (ev) => {
+      if (!dragging && Math.abs(ev.clientY - startY) < 4) return;
+      if (!dragging) { dragging = true; rowOf(id)?.classList.add('dragging'); document.body.append(line); closeSlash(); }
+      const rows = [...blocksEl.children];
+      let pos = rows.length;
+      for (let k = 0; k < rows.length; k++) {
+        const r = rows[k].getBoundingClientRect();
+        if (ev.clientY < r.top + r.height / 2) { pos = k; break; }
+      }
+      target = pos;
+      const ref = rows[Math.min(pos, rows.length - 1)].getBoundingClientRect();
+      const y = pos < rows.length ? ref.top : ref.bottom;
+      const br = blocksEl.getBoundingClientRect();
+      line.style.top = `${y - 1}px`; line.style.left = `${br.left}px`; line.style.width = `${br.width}px`;
+    };
+    const onUp = () => {
+      window.removeEventListener('pointermove', onMove);
+      window.removeEventListener('pointerup', onUp);
+      window.removeEventListener('pointercancel', onUp);
+      line.remove(); rowOf(id)?.classList.remove('dragging');
+      if (!dragging) { openBlockMenu(id); return; }
+      if (target != null) moveTo(id, target);
+    };
+    window.addEventListener('pointermove', onMove);
+    window.addEventListener('pointerup', onUp);
+    window.addEventListener('pointercancel', onUp);
+  }
+  function moveTo(id, pos) {
+    const arr = blocks(); const i = idx(id); if (i < 0) return;
+    const to = pos > i ? pos - 1 : pos;
+    if (to === i) return;
+    const [b] = arr.splice(i, 1); arr.splice(to, 0, b);
+    render(); focusBlock(id, 'end'); save();
+  }
+  async function openBlockMenu(id) {
+    const b = find(id); if (!b || readOnly) return;
+    const a = await actionSheet(null, [
+      { label: '아래에 블록 추가', value: 'add' },
+      { label: '형식 바꾸기', value: 'turn' },
+      { label: '복제', value: 'dup' },
+      { label: '위로 이동', value: 'up' },
+      { label: '아래로 이동', value: 'down' },
+      { label: '삭제', value: 'del', danger: true },
+    ]);
+    if (!a || !find(id)) return;
+    if (a === 'add') { const nb = insertAfter(id, newBlock()); focusBlock(nb.id, 'start'); save(); }
+    else if (a === 'turn') {
+      const t = await actionSheet('형식 바꾸기', BLOCK_TYPES.filter((x) => TEXT_TYPES.has(x.type)).map((x) => ({ label: x.label, value: x.type })));
+      if (t && find(id)) setType(id, t);
+    } else if (a === 'dup') {
+      const nb = insertAfter(id, { ...JSON.parse(JSON.stringify(b)), id: newBlock().id });
+      focusBlock(nb.id, 'end'); save();
+    } else if (a === 'up') moveBlock(id, -1);
+    else if (a === 'down') moveBlock(id, 1);
+    else if (a === 'del') {
+      const i = idx(id); removeBlock(id);
+      const p = blocks()[Math.max(0, i - 1)]; if (p) focusBlock(p.id, 'end');
+      save();
+    }
   }
 
   // 줄 맨 앞에서 지우기: 형식 해제 → 위 블록과 합치기
@@ -408,7 +521,9 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange }) {
         removeBlock(id);
         focusBlock((prev || blocks()[0]).id, prev ? 'end' : 'start'); save();
       } else if (e.key === 'Enter') {
-        e.preventDefault(); const nb = insertAfter(id, newBlock()); focusBlock(nb.id, 'start'); save();
+        e.preventDefault();
+        if (b.type === 'page' && hooks.openPage) { hooks.openPage(b.page_id); return; }
+        const nb = insertAfter(id, newBlock()); focusBlock(nb.id, 'start'); save();
       } else if (e.key === 'ArrowUp' && i > 0) { e.preventDefault(); focusBlock(blocks()[i - 1].id, 'end'); }
       else if (e.key === 'ArrowDown' && i < blocks().length - 1) { e.preventDefault(); focusBlock(blocks()[i + 1].id, 'start'); }
       return;
@@ -535,6 +650,10 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange }) {
         onclick: () => { if (note && !readOnly && activeId && idx(activeId) >= 0) moveBlock(activeId, dir); },
       }, label)));
     }
+    toolbarEl.append(keep(el('button', {
+      type: 'button', class: 'tb-move', 'aria-label': '블록 메뉴', title: '블록 메뉴',
+      onclick: () => { if (note && !readOnly && activeId && idx(activeId) >= 0) openBlockMenu(activeId); },
+    }, '⋯')));
     toolbarEl.append(el('span', { class: 'tb-spacer' }),
       keep(el('button', { type: 'button', class: 'tb-done', onclick: () => document.activeElement && document.activeElement.blur() }, '완료')));
   }
@@ -557,6 +676,16 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange }) {
     },
     close() { note = null; activeId = null; closeSlash(); blocksEl.textContent = ''; titleEl.value = ''; },
     currentId: () => (note ? note.id : null),
+    refreshPageLinks() {
+      if (!note) return;
+      blocksEl.querySelectorAll('.block-page').forEach((row) => {
+        const b = find(row.dataset.id); if (!b) return;
+        const p = hooks.getPage ? hooks.getPage(b.page_id) : null;
+        const ico = row.querySelector('.page-link-ico'); const ttl = row.querySelector('.page-link-title');
+        if (ico) ico.textContent = (p && p.icon) || '📄';
+        if (ttl) ttl.textContent = pageTitle(p);
+      });
+    },
     isFocused() {
       const a = document.activeElement;
       return !!note && (a === titleEl || blocksEl.contains(a));

@@ -14,22 +14,45 @@ export const newBlock = (type = 'p', text = '') => ({ id: uid(), type, text });
 
 function seed() {
   const t = now();
-  const folder = { id: uid(), name: '메모', created_at: t, updated_at: t, deleted: false, dirty: true };
-  const note = {
-    id: uid(), folder_id: folder.id, title: '시작하기', pinned: true, deleted: false,
-    created_at: t, updated_at: t, dirty: true,
-    blocks: [
-      newBlock('p', '메모장처럼 바로 쓰고, 폴더로 정리하세요.'),
-      newBlock('h2', '빠른 입력'),
-      newBlock('bullet', '줄 맨 앞에 / 를 입력하면 블록 메뉴가 열립니다.'),
-      newBlock('bullet', '# 제목, ## 소제목, - 목록, [] 체크박스, > 인용, --- 구분선'),
-      newBlock('bullet', '아래 도구 막대로도 블록 형식을 바꿀 수 있습니다.'),
-      { ...newBlock('todo', '첫 메모 써보기'), checked: false },
-      newBlock('h2', '기기 간 동기화와 공유'),
-      newBlock('p', '설정에서 로그인하면 컴퓨터와 아이폰이 같은 메모를 봅니다. 폴더 메뉴(⋯)에서 공유 링크를 만들면 지인과 그 폴더를 함께 씁니다.'),
-    ],
+  const folder = { id: uid(), name: '개인 페이지', created_at: t, updated_at: t, deleted: false, dirty: true };
+  return { folders: [folder], notes: [], meta: { purged: [] } };
+}
+
+// 노션식 둘러보기 페이지 (처음 한 번만 추가)
+function addDemo(folderId) {
+  const base = Date.now();
+  const mk = (k, o) => {
+    const t = new Date(base + k).toISOString();
+    return { id: uid(), folder_id: folderId, parent_id: null, title: '', icon: '', cover: '', pinned: false, deleted: false, created_at: t, updated_at: t, dirty: true, blocks: [], ...o };
   };
-  return { folders: [folder], notes: [note], meta: { purged: [] } };
+  const top = mk(0, { title: 'Memo 둘러보기', icon: '👋', cover: 'sand' });
+  const guide = mk(1, { title: '블록 사용법', icon: '🧱', parent_id: top.id });
+  const todo = mk(2, { title: '이번 주 할 일', icon: '✅', parent_id: top.id });
+  top.blocks = [
+    { ...newBlock('callout', '페이지 안에 페이지를 계속 만들어서 정리합니다. 왼쪽 목록의 ▸ 를 누르면 하위 페이지가 펼쳐집니다.'), icon: '💡' },
+    newBlock('h2', '하위 페이지'),
+    { ...newBlock('page'), page_id: guide.id },
+    { ...newBlock('page'), page_id: todo.id },
+    newBlock('h2', '바로 써보기'),
+    newBlock('p', '빈 줄에서 / 를 누르고 "페이지"를 고르면 이 안에 새 페이지가 생깁니다.'),
+    newBlock('p', ''),
+  ];
+  guide.blocks = [
+    newBlock('h2', '줄 맨 앞 단축 입력'),
+    newBlock('bullet', '# 제목, ## 소제목'),
+    newBlock('bullet', '- 목록, 1. 번호 목록, [] 체크박스'),
+    newBlock('bullet', '> 인용, --- 구분선'),
+    newBlock('h2', '블록 다루기'),
+    newBlock('number', '컴퓨터: 블록 왼쪽 ⋮⋮ 를 끌면 순서 변경, 누르면 메뉴'),
+    newBlock('number', '아이폰: 아래 도구 막대의 ↑ ↓ 와 ⋯'),
+    { ...newBlock('callout', '아이콘과 커버는 제목 위에 마우스를 올리거나, 페이지 메뉴(⋯)에서 바꿉니다.'), icon: '🎨' },
+  ];
+  todo.blocks = [
+    { ...newBlock('todo', 'Memo를 홈 화면에 추가하기'), checked: false },
+    { ...newBlock('todo', '내 첫 페이지 만들기'), checked: false },
+    { ...newBlock('todo', '지인과 함께 쓸 섹션 정하기'), checked: false },
+  ];
+  state.notes.push(top, guide, todo);
 }
 
 function load() {
@@ -44,6 +67,11 @@ function load() {
 }
 
 let state = load();
+if (!state.meta.demo2) {
+  const f = state.folders.find((x) => !x.deleted);
+  if (f) addDemo(f.id);
+  state.meta.demo2 = true;
+}
 const listeners = new Set();
 let saveTimer = null;
 let lockFn = () => null;
@@ -75,8 +103,35 @@ export function preview(n) {
   const b = (n.blocks || []).find((x) => x.text && x.text.trim());
   return b ? b.text.trim().split('\n')[0] : '';
 }
+const byCreated = (a, b) => (a.created_at < b.created_at ? -1 : a.created_at > b.created_at ? 1 : 0);
+function liveParent(n) {
+  if (!n.parent_id) return null;
+  const p = getNote(n.parent_id);
+  return p && !p.deleted ? p : null;
+}
+export function childPages(id) { return state.notes.filter((n) => !n.deleted && n.parent_id === id).sort(byCreated); }
+export function topPages(folderId) { return state.notes.filter((n) => !n.deleted && n.folder_id === folderId && !liveParent(n)).sort(byCreated); }
+export function favorites() { return state.notes.filter((n) => !n.deleted && n.pinned).sort(byCreated); }
+export function ancestors(id) {
+  const out = []; const seen = new Set([id]);
+  let n = getNote(id);
+  while (n) {
+    const p = liveParent(n);
+    if (!p || seen.has(p.id)) break;
+    seen.add(p.id); out.unshift(p); n = p;
+  }
+  return out;
+}
+function descendants(id) {
+  const out = []; const stack = [id]; const seen = new Set([id]);
+  while (stack.length) {
+    const cur = stack.pop();
+    for (const n of state.notes) if (n.parent_id === cur && !seen.has(n.id)) { seen.add(n.id); out.push(n); stack.push(n.id); }
+  }
+  return out;
+}
 export function isEmptyNote(n) {
-  return !(n.title || '').trim()
+  return !(n.title || '').trim() && !n.icon && !childPages(n.id).length
     && !(n.blocks || []).some((b) => (b.text || '').trim() || b.type === 'image' || b.type === 'divider');
 }
 // folderId: 'all' | 'trash' | 폴더 id
@@ -116,10 +171,10 @@ export function setLocal(kind, id, patch) {
   if (it) { Object.assign(it, patch); commit('local'); }
 }
 
-export function createNote(folderId) {
+export function createNote(folderId, parentId = null) {
   const t = now();
   const n = {
-    id: uid(), folder_id: folderId, title: '', blocks: [newBlock()], pinned: false, deleted: false,
+    id: uid(), folder_id: folderId, parent_id: parentId, icon: '', cover: '', title: '', blocks: [newBlock()], pinned: false, deleted: false,
     created_at: t, updated_at: t, dirty: true,
   };
   state.notes.push(n);
@@ -142,18 +197,31 @@ export function duplicateNote(id) {
   commit('data');
   return n;
 }
-export function trashNote(id) { updateNote(id, { deleted: true }); }
+// 휴지통/복구/영구삭제는 하위 페이지까지 함께 처리한다
+export function trashNote(id) {
+  const n = getNote(id); if (!n) return;
+  for (const x of [n, ...descendants(id)]) if (!x.deleted) { x.deleted = true; touch(x); }
+  commit('data');
+}
 export function restoreNote(id) {
   const n = getNote(id); if (!n) return;
   const f = getFolder(n.folder_id);
-  const patch = { deleted: false };
-  if (!f || f.deleted) patch.folder_id = ensureDefaultFolder().id;
-  updateNote(id, patch);
+  const fid = !f || f.deleted ? ensureDefaultFolder().id : n.folder_id;
+  if (n.parent_id) { const p = getNote(n.parent_id); if (!p || p.deleted) n.parent_id = null; }
+  for (const x of [n, ...descendants(id)]) if (x.deleted || x.folder_id !== fid) { x.deleted = false; x.folder_id = fid; touch(x); }
+  commit('data');
 }
 export function purgeNote(id) {
   const n = getNote(id); if (!n) return;
-  state.notes = state.notes.filter((x) => x.id !== id);
-  if (n.synced) state.meta.purged.push(id);
+  const ids = new Set([id, ...descendants(id).map((x) => x.id)]);
+  for (const x of state.notes) if (ids.has(x.id) && x.synced) state.meta.purged.push(x.id);
+  state.notes = state.notes.filter((x) => !ids.has(x.id));
+  commit('data');
+}
+export function moveNote(id, folderId) {
+  const n = getNote(id); if (!n) return;
+  n.parent_id = null;
+  for (const x of [n, ...descendants(id)]) { x.folder_id = folderId; touch(x); }
   commit('data');
 }
 export function emptyTrash() {
@@ -255,6 +323,8 @@ export function toMarkdown(n) {
       case 'h2': out.push(`### ${t}`); break;
       case 'bullet': out.push(`- ${t}`); break;
       case 'number': out.push(`${num}. ${t}`); break;
+      case 'callout': out.push(`> ${b.icon || '💡'} ${t}`); break;
+      case 'page': { const p = getNote(b.page_id); out.push(`[${(p && p.title) || '제목 없음'}]`); break; }
       case 'todo': out.push(`- [${b.checked ? 'x' : ' '}] ${t}`); break;
       case 'quote': out.push(`> ${t}`); break;
       case 'divider': out.push('---'); break;
