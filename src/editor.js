@@ -1,6 +1,6 @@
 // 블록 에디터: 블록마다 contenteditable 한 줄. 서식 없는 텍스트만 저장한다.
 import { el, toast, actionSheet, promptDialog } from './ui.js';
-import { newBlock } from './store.js';
+import { newBlock, putImage, imageURL } from './store.js';
 import { sanitize, FMT_SEL } from './rich.js';
 
 const TEXT_TYPES = new Set(['p', 'h1', 'h2', 'bullet', 'number', 'todo', 'quote', 'callout', 'toggle']);
@@ -304,7 +304,10 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
     if (b.type === 'divider') { row.tabIndex = 0; row.append(el('hr')); return row; }
     if (b.type === 'image') {
       row.tabIndex = 0;
-      row.append(el('img', { src: b.src || '', alt: '', draggable: 'false' }));
+      const img = el('img', { alt: '', draggable: 'false' });
+      if (b.src) img.src = b.src;
+      else if (b.img) imageURL(b.img).then((u) => { if (u) img.src = u; else img.alt = '사진을 찾을 수 없습니다'; });
+      row.append(img);
       if (!readOnly) {
         row.append(el('button', {
           type: 'button', class: 'block-remove', 'aria-label': '이미지 삭제',
@@ -656,14 +659,14 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
   async function insertImageFile(afterId, file) {
     const target = note;
     try {
-      const src = await fileToDataURL(file);
+      const ref = await putImage(await fileToDataURL(file));
       if (note !== target) return;
       const b = find(afterId);
       let imgId;
       if (b && TEXT_TYPES.has(b.type) && !(b.text || '').trim()) {
-        b.type = 'image'; b.src = src; b.text = ''; delete b.checked; replaceRow(b); imgId = b.id;
+        b.type = 'image'; delete b.src; Object.assign(b, ref); b.text = ''; delete b.html; delete b.checked; replaceRow(b); imgId = b.id;
       } else {
-        imgId = insertAfter(afterId, { ...newBlock('image'), src }).id;
+        imgId = insertAfter(afterId, { ...newBlock('image'), ...ref }).id;
       }
       let next = blocks()[idx(imgId) + 1];
       if (!next || !TEXT_TYPES.has(next.type)) next = insertAfter(imgId, newBlock());

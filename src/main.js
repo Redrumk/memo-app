@@ -505,16 +505,52 @@ function openSettings() {
   openOverlay(box, { onClose: () => { settingsRedraw = null; } });
 }
 
-function exportAll() {
+// 백업: 아이폰에서는 공유 시트로 '파일에 저장', 컴퓨터에서는 내려받기
+async function exportAll() {
   const d = new Date();
   const stamp = `${d.getFullYear()}${String(d.getMonth() + 1).padStart(2, '0')}${String(d.getDate()).padStart(2, '0')}`;
-  download(`memo-backup-${stamp}.json`, store.exportData());
+  const name = `memo-backup-${stamp}.json`;
+  const json = await store.exportData();
+  let done = false;
+  try {
+    const file = new File([json], name, { type: 'application/json' });
+    if (isMobile() && navigator.canShare && navigator.canShare({ files: [file] })) {
+      await navigator.share({ files: [file], title: 'Memo 백업' });
+      done = true;
+    }
+  } catch (e) { if (e && e.name === 'AbortError') return; }
+  if (!done) download(name, json);
+  try { localStorage.setItem(BACKUP_AT, String(Date.now())); localStorage.removeItem(SNOOZE_AT); } catch { /* 무시 */ }
+  renderBackupBanner();
+  toast('백업 파일을 만들었습니다');
+}
+
+// 동기화를 안 쓰는 동안 오래 백업하지 않았으면 알려준다
+const BACKUP_AT = 'memo.lastBackup';
+const SNOOZE_AT = 'memo.backupSnooze';
+const FIRST_USE = 'memo.firstUse';
+const DAY = 86400000;
+function lsNum(k) { try { return Number(localStorage.getItem(k)) || 0; } catch { return 0; } }
+function renderBackupBanner() {
+  const box = $('#backup-banner');
+  const nowMs = Date.now();
+  if (!lsNum(FIRST_USE)) { try { localStorage.setItem(FIRST_USE, String(nowMs)); } catch { /* 무시 */ } }
+  const last = lsNum(BACKUP_AT) || lsNum(FIRST_USE) || nowMs;
+  const due = !sync.user() && store.allPages().length >= 3 && nowMs - last > 14 * DAY && nowMs - lsNum(SNOOZE_AT) > 3 * DAY;
+  box.hidden = !due;
+  if (!due) return;
+  const days = Math.floor((nowMs - last) / DAY);
+  box.textContent = '';
+  box.append(el('p', {}, `${days}일째 백업이 없습니다. 동기화를 켜기 전까지 페이지는 이 기기에만 있습니다.`),
+    el('div', { class: 'row' },
+      el('button', { class: 'btn primary', type: 'button', onclick: exportAll }, '지금 백업'),
+      el('button', { class: 'btn', type: 'button', onclick: () => { try { localStorage.setItem(SNOOZE_AT, String(Date.now())); } catch { /* 무시 */ } renderBackupBanner(); } }, '나중에')));
 }
 function importAll() {
   const inp = el('input', { type: 'file', accept: 'application/json,.json' });
   inp.addEventListener('change', async () => {
     const file = inp.files && inp.files[0]; if (!file) return;
-    try { const c = store.importData(JSON.parse(await file.text())); toast(`페이지 ${c}개를 가져왔습니다`); }
+    try { const c = await store.importData(JSON.parse(await file.text())); toast(`페이지 ${c}개를 가져왔습니다`); }
     catch (e) { alertDialog(`가져오지 못했습니다.\n${e.message || e}`); }
   });
   inp.click();
@@ -661,6 +697,7 @@ function init() {
     if (!isMobile()) { const first = store.favorites()[0] || newestTopPage(); if (first) openPage(first.id, { keepView: true }); }
   }
   captureJoinParam();
+  renderBackupBanner();
   sync.init({ onStatus, onUser });
   if ('serviceWorker' in navigator && (location.protocol === 'https:' || location.hostname === 'localhost')) {
     navigator.serviceWorker.register('sw.js').catch(() => {});

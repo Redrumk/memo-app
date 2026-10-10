@@ -65,25 +65,62 @@ let db = null;
 function openDB() {
   return new Promise((resolve, reject) => {
     if (!('indexedDB' in window)) { reject(new Error('no indexedDB')); return; }
-    const req = indexedDB.open('memo', 1);
-    req.onupgradeneeded = () => req.result.createObjectStore('kv');
+    const req = indexedDB.open('memo', 2);
+    req.onupgradeneeded = () => {
+      const d = req.result;
+      if (!d.objectStoreNames.contains('kv')) d.createObjectStore('kv');
+      if (!d.objectStoreNames.contains('images')) d.createObjectStore('images');
+    };
     req.onsuccess = () => resolve(req.result);
     req.onerror = () => reject(req.error);
     setTimeout(() => reject(new Error('indexedDB timeout')), 4000);
   });
 }
-function idbGet(key) {
+function idbReq(storeName, mode, fn) {
   return new Promise((resolve, reject) => {
-    const r = db.transaction('kv').objectStore('kv').get(key);
-    r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error);
+    const tx = db.transaction(storeName, mode);
+    const r = fn(tx.objectStore(storeName));
+    tx.oncomplete = () => resolve(r && r.result); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
   });
 }
-function idbPut(key, value) {
-  return new Promise((resolve, reject) => {
-    const tx = db.transaction('kv', 'readwrite');
-    tx.objectStore('kv').put(value, key);
-    tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
-  });
+const idbGet = (key, s = 'kv') => idbReq(s, 'readonly', (o) => o.get(key));
+const idbPut = (key, value, s = 'kv') => idbReq(s, 'readwrite', (o) => { o.put(value, key); });
+const idbKeys = (s) => idbReq(s, 'readonly', (o) => o.getAllKeys());
+const idbDel = (key, s) => idbReq(s, 'readwrite', (o) => { o.delete(key); });
+
+// ---------- 사진: 페이지 데이터와 따로 저장해 입력이 가볍게 유지된다 ----------
+const imgCache = new Map();
+export async function putImage(dataURL) {
+  if (!db) return { src: dataURL };
+  const id = `img_${uid()}`;
+  await idbPut(id, dataURL, 'images');
+  imgCache.set(id, dataURL);
+  return { img: id };
+}
+export async function imageURL(id) {
+  if (imgCache.has(id)) return imgCache.get(id);
+  if (!db) return '';
+  const d = await idbGet(id, 'images');
+  if (d) imgCache.set(id, d);
+  return d || '';
+}
+function imageBlocks() {
+  const out = [];
+  for (const n of state.notes) for (const b of n.blocks || []) if (b.type === 'image') out.push(b);
+  return out;
+}
+// 예전처럼 페이지 안에 들어 있던 사진을 사진 저장소로 옮기고, 아무 데서도 안 쓰는 사진은 지운다
+async function migrateImages() {
+  if (!db) return;
+  for (const b of imageBlocks()) {
+    if (b.src && b.src.startsWith('data:') && !b.img) {
+      const id = `img_${uid()}`;
+      await idbPut(id, b.src, 'images');
+      b.img = id; delete b.src;
+    }
+  }
+  const used = new Set(imageBlocks().map((b) => b.img).filter(Boolean));
+  for (const k of await idbKeys('images')) if (!used.has(k)) await idbDel(k, 'images');
 }
 const BACKUP_KEY = 'memo.unsaved.v1';
 function readBackup() {
@@ -125,6 +162,7 @@ export async function init() {
     if (f) addDemo(f.id);
     state.meta.demo2 = true;
   }
+  try { await migrateImages(); } catch (e) { console.warn('image migration failed', e); }
   flush();
   try { localStorage.removeItem(BACKUP_KEY); } catch { /* 무시 */ }
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch { /* 지원 안 함 */ }
@@ -396,11 +434,19 @@ export function mergeRemote(rFolders, rNotes, myId) {
 
 // ---------- 내보내기/가져오기 ----------
 const strip = ({ dirty, synced, shared, linked, ...rest }) => rest;
-export function exportData() {
-  return JSON.stringify({ app: 'memo', version: 1, exported_at: now(), folders: state.folders.map(strip), notes: state.notes.map(strip) }, null, 2);
+// 백업 파일에는 사진도 함께 넣는다
+export async function exportData() {
+  const images = {};
+  for (const b of imageBlocks()) if (b.img && !images[b.img]) images[b.img] = await imageURL(b.img);
+  return JSON.stringify({ app: 'memo', version: 2, exported_at: now(), folders: state.folders.map(strip), notes: state.notes.map(strip), images }, null, 2);
 }
-export function importData(obj) {
+export async function importData(obj) {
   if (!obj || !Array.isArray(obj.notes)) throw new Error('형식이 맞지 않는 파일입니다');
+  for (const [id, url] of Object.entries(obj.images || {})) {
+    if (typeof url === 'string' && url.startsWith('data:image/')) {
+      if (db) await idbPut(id, url, 'images'); imgCache.set(id, url);
+    }
+  }
   let added = 0;
   for (const f of obj.folders || []) {
     if (f && f.id && f.name && !getFolder(f.id)) state.folders.push({ ...strip(f), dirty: true, synced: false });

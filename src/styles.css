@@ -524,3 +524,9 @@ body:has(.overlay) .toast { bottom: auto; top: calc(16px + env(safe-area-inset-t
   .side-foot .text-btn { min-height: 44px; padding: 0 12px; }
 }
 body:has(.overlay) .toast { top: calc(72px + env(safe-area-inset-top)); }
+
+/* ---------- backup reminder ---------- */
+.backup-banner { margin: 0 8px 8px; padding: 12px; border-radius: 10px; background: var(--accent-soft); font-size: 13px; line-height: 1.5; }
+.backup-banner p { margin: 0 0 8px; }
+.backup-banner .btn { padding: 8px 12px; font-size: 14px; min-height: 40px; }
+@media (max-width: 759px) { .backup-banner { margin-bottom: 76px; } }
