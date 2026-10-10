@@ -152,8 +152,10 @@ create table if not exists public.images (
 alter table public.images enable row level security;
 drop policy if exists images_select on public.images;
 drop policy if exists images_insert on public.images;
+-- 내가 볼 수 있는 페이지 중 하나라도 이 사진을 쓰고 있으면 볼 수 있다 (복제·이동한 페이지 포함)
 create policy images_select on public.images for select to authenticated
   using (owner_id = auth.uid() or exists (
     select 1 from public.notes n
-    where n.id = images.note_id and (n.owner_id = auth.uid() or (n.folder_id is not null and public.can_access_folder(n.folder_id)))));
+    where (n.owner_id = auth.uid() or (n.folder_id is not null and public.can_access_folder(n.folder_id)))
+      and n.blocks @> jsonb_build_array(jsonb_build_object('img', images.id))));
 create policy images_insert on public.images for insert to authenticated with check (owner_id = auth.uid());

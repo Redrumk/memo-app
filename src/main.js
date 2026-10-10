@@ -242,6 +242,10 @@ store.subscribe((kind, ids) => {
     ui.pageId = null; ui.recent = []; editor.close(); showEditor(null); setView('tree'); renderAll();
     return;
   }
+  if (kind === 'rescued') {
+    toast(`공유가 끊긴 섹션에서 고친 페이지를 내 섹션으로 옮겨 보관했습니다`);
+    return;
+  }
   if (kind === 'conflict') {
     toast(`같은 페이지를 두 기기에서 고쳐서, 다른 기기 내용은 '(다른 기기 버전)' 페이지로 따로 보관했습니다`);
     return;
@@ -737,11 +741,35 @@ function tabBlocker(message, button, onClick) {
       el('p', {}, message),
       el('button', { class: 'btn primary', type: 'button', onclick: onClick }, button))));
 }
+const STEAL = 'memo.stealTab';
+function stepDown() {
+  if (!isWriter) return;
+  isWriter = false;
+  store.flush(); store.setWritable(false);
+  tabBlocker('다른 탭에서 Memo를 열어서, 이 탭은 잠시 멈췄습니다.', '이 탭에서 다시 쓰기', takeOver);
+}
 function takeOver() {
   if (bc) bc.postMessage({ type: 'takeover', id: tabId });
+  try { sessionStorage.setItem(STEAL, '1'); } catch { /* 무시 */ }
   setTimeout(() => location.reload(), 400);
 }
+// Web Locks: 잠든 탭(아이폰 백그라운드)이 있어도 잠금이 확실하다. 가져가면 원래 탭은 깨어나는 즉시 멈춘다
+function holdLock(steal) {
+  return new Promise((resolve) => {
+    navigator.locks.request('memo-writer', steal ? { steal: true } : { ifAvailable: true }, (lock) => {
+      if (!lock) { resolve(false); return undefined; }
+      resolve(true);
+      return new Promise(() => {}); // 탭이 열려 있는 동안 계속 쥔다
+    }).catch(() => stepDown());
+  });
+}
 async function claimTab() {
+  if (bc) bc.onmessage = (e) => { const m = e.data || {}; if (m.id !== tabId && m.type === 'takeover') stepDown(); };
+  if (navigator.locks && navigator.locks.request) {
+    let steal = false;
+    try { steal = sessionStorage.getItem(STEAL) === '1'; sessionStorage.removeItem(STEAL); } catch { /* 무시 */ }
+    return holdLock(steal);
+  }
   if (!bc) return true;
   let other = false;
   bc.onmessage = (e) => {
@@ -749,11 +777,7 @@ async function claimTab() {
     if (m.id === tabId) return;
     if (m.type === 'hello' && isWriter) bc.postMessage({ type: 'here', id: tabId });
     if (m.type === 'here') other = true;
-    if (m.type === 'takeover' && isWriter) {
-      isWriter = false;
-      store.flush(); store.setWritable(false);
-      tabBlocker('다른 탭에서 Memo를 열어서, 이 탭은 잠시 멈췄습니다.', '이 탭에서 다시 쓰기', takeOver);
-    }
+    if (m.type === 'takeover') stepDown();
   };
   bc.postMessage({ type: 'hello', id: tabId });
   await new Promise((r) => setTimeout(r, 250));

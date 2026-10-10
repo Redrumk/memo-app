@@ -433,9 +433,28 @@ export function markClean(kind, snaps, serverRows = []) {
   persist();
 }
 // 서버가 거절한 항목(권한 없음)은 더 올리지 않는다. 다음 전체 동기화에서 정리된다
+// 페이지는 지우지 않는다: 내용을 내 기본 섹션의 새 페이지로 옮겨 다시 올린다 (공유가 끊긴 섹션 등)
 export function dropDenied(kind, ids) {
-  for (const id of ids) { const it = state[kind].find((x) => x.id === id); if (it) { it.dirty = false; it.synced = true; it.baseAt = undefined; } }
+  const rescued = [];
+  for (const id of ids) {
+    const it = state[kind].find((x) => x.id === id);
+    if (!it) continue;
+    if (kind === 'notes' && !it.deleted) {
+      const own = state.folders.filter((f) => !f.deleted && !f.shared);
+      let target = own.sort((a, b) => (a.created_at < b.created_at ? -1 : 1))[0];
+      if (!target) { const t = now(); target = { id: uid(), name: '개인 페이지', created_at: t, updated_at: t, deleted: false, dirty: true }; state.folders.push(target); }
+      const t = now();
+      state.notes.push({
+        ...strip(it), id: uid(), owner_id: undefined, folder_id: target.id, parent_id: null,
+        created_at: t, updated_at: t, dirty: true, synced: false,
+        blocks: JSON.parse(JSON.stringify(it.blocks || [])).map((b) => ({ ...b, id: uid() })),
+      });
+      rescued.push(it.title || '제목 없음');
+    }
+    it.dirty = false; it.synced = true; it.baseAt = undefined;
+  }
   persist();
+  if (rescued.length) { listeners.forEach((fn) => fn('remote', [])); listeners.forEach((fn) => fn('rescued', rescued)); }
 }
 // 공유 섹션에서 나간 뒤: 남의 페이지는 지우고, 내가 만든 페이지는 내 기본 섹션으로 옮긴다
 export function forgetFolder(fid, myId) {
@@ -479,7 +498,13 @@ const iso = (v) => (v ? new Date(v).toISOString() : now());
 
 // ---------- 병합 ----------
 function hashStr(str) { let h = 5381; for (let i = 0; i < str.length; i += 1) h = ((h << 5) + h + str.charCodeAt(i)) | 0; return `${(h >>> 0).toString(36)}:${str.length}`; }
-function contentHash(x) { return hashStr(JSON.stringify([x.title || '', x.blocks || [], x.icon || '', x.cover || ''])); }
+// 서버(Postgres jsonb)는 객체 키 순서를 바꿔 저장하므로, 키를 정렬해서 비교한다
+function stable(v) {
+  if (Array.isArray(v)) return `[${v.map(stable).join(',')}]`;
+  if (v && typeof v === 'object') return `{${Object.keys(v).filter((k) => v[k] !== undefined).sort().map((k) => `${JSON.stringify(k)}:${stable(v[k])}`).join(',')}}`;
+  return JSON.stringify(v === undefined ? null : v);
+}
+function contentHash(x) { return hashStr(stable([x.title || '', x.blocks || [], x.icon || '', x.cover || ''])); }
 const LOC = ['folder_id', 'parent_id', 'deleted', 'pinned'];
 const locVal = (x, k) => (k === 'deleted' || k === 'pinned' ? !!x[k] : x[k] || null);
 function pickLoc(x) { const o = {}; for (const k of LOC) o[k] = locVal(x, k); return o; }

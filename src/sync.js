@@ -113,7 +113,7 @@ async function pushTable(table, items, rowFn) {
 async function pushImages() {
   for (const id of store.pendingImageUploads()) {
     const data = await store.imageURL(id);
-    if (!data) continue;
+    if (!data) { store.markImageUploaded(id); continue; } // 이 기기에 없는 사진: 올릴 것이 없다
     const { error } = await sb.from('images').upsert([{ id, note_id: store.noteForImage(id), data }], { onConflict: 'id', ignoreDuplicates: true });
     if (error && !isDenied(error)) throw error;
     store.markImageUploaded(id);

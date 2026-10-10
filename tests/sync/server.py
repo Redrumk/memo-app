@@ -6,6 +6,11 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 lock = threading.Lock()
 db = {'folders': {}, 'notes': {}, 'members': set(), 'links': {}, 'images': {}}
 def server_now(): return datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='milliseconds').replace('+00:00','Z')
+def jsonb(v):
+    # Postgres jsonb처럼 객체 키를 (짧은 키 먼저, 같으면 사전순) 정렬해 저장
+    if isinstance(v, list): return [jsonb(x) for x in v]
+    if isinstance(v, dict): return {k: jsonb(v[k]) for k in sorted(v, key=lambda k: (len(k.encode()), k))}
+    return v
 def pg_time(v): return v.replace('Z', '+00:00') if isinstance(v, str) else v
 def norm(v): return v.replace('+00:00', 'Z') if isinstance(v, str) else v
 def can_access(uid, fid):
@@ -43,10 +48,10 @@ def query(q):
                 if not note_visible(uid, ex): return err('rls notes update')
                 new = {**ex, **r}
                 if new.get('folder_id') and not can_access(uid, new['folder_id']) and new['owner_id'] != uid: return err('rls notes update')
-                db['notes'][r['id']] = {**new, 'updated_at': server_now()}
+                db['notes'][r['id']] = {**new, 'blocks': jsonb(new.get('blocks', [])), 'updated_at': server_now()}
             else:
                 if r.get('folder_id') and not can_access(uid, r['folder_id']): return err('rls notes insert')
-                db['notes'][r['id']] = {**r, 'owner_id': uid, 'updated_at': server_now()}
+                db['notes'][r['id']] = {**r, 'blocks': jsonb(r.get('blocks', [])), 'owner_id': uid, 'updated_at': server_now()}
         return {'data': [{'id': r['id'], 'updated_at': pg_time(db['notes'][r['id']]['updated_at'])} for r in q['rows']] if q.get('returning') else None, 'error': None}
     if t == 'images' and op == 'upsert':
         for r in q['rows']:
@@ -58,8 +63,8 @@ def query(q):
         for i in ids:
             im = db['images'].get(i)
             if not im: continue
-            n = db['notes'].get(im.get('note_id'))
-            if im['owner_id'] == uid or (n and note_visible(uid, n)): out.append({'id': im['id'], 'data': im['data']})
+            used = any(note_visible(uid, n) and any(b.get('img') == i for b in n.get('blocks', [])) for n in db['notes'].values())
+            if im['owner_id'] == uid or used: out.append({'id': im['id'], 'data': im['data']})
         return {'data': out, 'error': None}
     if t == 'notes' and op == 'delete':
         ids = next((f[2] for f in q['filters'] if f[0] == 'in'), [])
