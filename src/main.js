@@ -120,7 +120,7 @@ function renderTree() {
     return;
   }
   const recent = ui.recent.map((id) => store.getNote(id)).filter((n) => n && !n.deleted).slice(0, 5);
-  if (recent.length) {
+  if (recent.length && store.allPages().length >= 6) {
     tree.append(el('div', { class: 'section-head static mobile-only' }, el('span', { class: 'section-name' }, '최근')));
     for (const n of recent) {
       tree.append(el('button', { class: 'result-row mobile-only', type: 'button', onclick: () => openPage(n.id) },
@@ -175,6 +175,7 @@ function renderHeader() {
   $('#btn-add-icon').hidden = !!n.icon || !!n.deleted;
   $('#btn-add-cover').hidden = !!n.cover || !!n.deleted;
   $('#editor').classList.toggle('has-icon', !!n.icon);
+  $('#editor').classList.toggle('is-blank', !$('#templates').hidden);
   const chars = store.noteText(n).replace(/\s/g, '').length;
   renderTemplates(n);
   $('#note-meta').textContent = [`수정 ${formatFull(n.updated_at)}`, f?.shared ? '공유 섹션' : null, `${chars.toLocaleString('ko-KR')}자`].filter(Boolean).join(' · ');
@@ -188,9 +189,11 @@ function renderTemplates(n) {
   if (!blank || box.dataset.for === n.id) return;
   box.dataset.for = n.id;
   box.textContent = '';
-  box.append(el('div', { class: 'templates-label' }, '빈 페이지로 시작하거나 템플릿을 고르세요'));
+  box.append(el('div', { class: 'templates-label' }, '템플릿으로 시작'));
+  const grid = el('div', { class: 'tpl-grid' });
+  box.append(grid);
   for (const t of TEMPLATES) {
-    box.append(el('button', {
+    grid.append(el('button', {
       type: 'button', class: 'tpl-btn',
       onclick: () => {
         const cur = store.getNote(n.id); if (!cur) return;
@@ -339,19 +342,23 @@ async function folderMenu(fid) {
 async function pageMenu(id) {
   const n = store.getNote(id); if (!n) return;
   if (n.deleted) { trashItemMenu(n); return; }
-  const a = await actionSheet(titleOf(n), [
+  const chars = store.noteText(n).replace(/\s/g, '').length;
+  let a = await actionSheet(titleOf(n), [
     { label: n.pinned ? '즐겨찾기에서 빼기' : '즐겨찾기에 추가', value: 'pin' },
     { label: '하위 페이지 추가', value: 'sub' },
     { label: n.icon ? '아이콘 바꾸기' : '아이콘 추가', value: 'icon' },
     { label: n.cover ? '커버 바꾸기' : '커버 추가', value: 'cover' },
-    { label: '위로 이동', value: 'up' },
-    { label: '아래로 이동', value: 'down' },
-    { label: '다른 페이지 안으로 이동', value: 'nest' },
-    { label: '다른 섹션으로 이동', value: 'move' },
+    { label: '이동…', value: 'movemenu' },
     { label: '복제', value: 'dup' },
     { label: '텍스트로 내보내기', value: 'export' },
     { label: '휴지통으로 이동', value: 'delete', danger: true },
-  ]);
+  ], `수정 ${formatFull(n.updated_at)} · ${chars.toLocaleString('ko-KR')}자`);
+  if (a === 'movemenu') {
+    a = await actionSheet('이동', [
+      { label: '위로', value: 'up' }, { label: '아래로', value: 'down' },
+      { label: '다른 페이지 안으로', value: 'nest' }, { label: '다른 섹션으로', value: 'move' },
+    ]);
+  }
   if (a === 'pin') store.updateNote(n.id, { pinned: !n.pinned });
   else if (a === 'sub') newPage(n.folder_id, n.id);
   else if (a === 'icon') emojiPicker((e) => store.updateNote(n.id, { icon: e }), !!n.icon);
@@ -465,6 +472,7 @@ function openSettings() {
   const draw = () => {
     box.textContent = '';
     box.append(el('h4', {}, '동기화'));
+    if (statusText) box.append(el('p', { class: 'note-text' }, `상태: ${statusText}`));
     if (!sync.enabled()) {
       box.append(el('p', { class: 'note-text' }, '지금은 이 기기에만 저장됩니다. 동기화를 연결하면 로그인 후 컴퓨터와 아이폰이 같은 페이지를 보고, 섹션 공유도 켜집니다.'));
     } else if (!sync.user()) {
@@ -512,12 +520,14 @@ function importAll() {
 }
 
 // ---------- 동기화 상태 / 공유 참여 ----------
+let statusText = '';
 function onStatus(s, d) {
   const labels = { local: '이 기기에 저장', 'signed-out': '로그인 필요', syncing: '동기화 중…', offline: '오프라인', error: '동기화 오류' };
   const node = $('#sync-status');
   node.dataset.state = s;
   node.textContent = s === 'synced' ? `동기화됨 ${d.toLocaleTimeString('ko-KR', { hour: 'numeric', minute: '2-digit' })}` : (labels[s] || '');
   node.title = s === 'error' ? String(d || '') : '';
+  statusText = node.textContent + (s === 'error' && d ? ` (${d})` : '');
 }
 
 async function handleJoin(token) {
@@ -555,6 +565,15 @@ function captureJoinParam() {
 // ---------- 시작 ----------
 function bind() {
   $('#btn-new-page').addEventListener('click', () => newPage(currentFolderId(), null));
+  $('#btn-new-page-fab').addEventListener('click', () => newPage(currentFolderId(), null));
+  // 휴대폰 편집 막대는 글을 쓰는 동안만 보인다
+  const updEditing = () => setTimeout(() => app.classList.toggle('editing', editor.isFocused()), 0);
+  document.addEventListener('focusin', updEditing);
+  document.addEventListener('focusout', updEditing);
+  $('#cover').addEventListener('click', (e) => {
+    const n = ui.pageId && store.getNote(ui.pageId);
+    if (n && !n.deleted && !e.target.closest('button')) coverPicker(n.id);
+  });
   $('#btn-new-folder').addEventListener('click', newFolder);
   $('#btn-trash').addEventListener('click', openTrash);
   $('#btn-note-menu').addEventListener('click', () => { if (ui.pageId) pageMenu(ui.pageId); });

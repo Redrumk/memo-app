@@ -994,48 +994,57 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
   });
 
   // ---------- 도구 막대 ----------
+  // 휴대폰 편집 막대: 되돌리기 · 블록 추가 · 형식 · 체크 · 내어쓰기 · 들여쓰기 · 블록 메뉴 · 완료
+  const ICON = {
+    undo: '<path d="M9 14L4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
+    plus: '<path d="M12 5v14M5 12h14"/>',
+    todo: '<rect x="4" y="4" width="16" height="16" rx="3"/><path d="M8.5 12.5l2.5 2.5 4.5-5"/>',
+    outdent: '<path d="M20 6H10M20 12h-6M20 18H10"/><path d="M8 9l-3 3 3 3"/>',
+    indent: '<path d="M20 6H10M20 12h-6M20 18H10"/><path d="M4 9l3 3-3 3"/>',
+    more: '<circle cx="5" cy="12" r="1.4" fill="currentColor"/><circle cx="12" cy="12" r="1.4" fill="currentColor"/><circle cx="19" cy="12" r="1.4" fill="currentColor"/>',
+  };
+  const target = () => (activeId && idx(activeId) >= 0 ? activeId : blocks()[blocks().length - 1]?.id);
+  async function addBlockMenu() {
+    if (!note || readOnly) return;
+    const at = target(); if (!at) return;
+    const t = await actionSheet('블록 추가', BLOCK_TYPES.map((x) => ({ label: `${x.icon}   ${x.label}`, value: x.type })));
+    if (!t || !find(at)) return;
+    const cur = find(at);
+    const id = cur.type === 'p' && !(cur.text || '').trim() ? at : insertAfter(at, newBlock()).id;
+    if (t === 'p') { focusBlock(id, 'start'); save(); return; }
+    setType(id, t);
+  }
+  async function turnMenu() {
+    if (!note || readOnly) return;
+    const at = target(); if (!at) return;
+    const t = await actionSheet('형식 바꾸기', BLOCK_TYPES.filter((x) => TEXT_TYPES.has(x.type)).map((x) => ({ label: `${x.icon}   ${x.label}`, value: x.type })));
+    if (t && find(at)) setType(at, t);
+  }
   function buildToolbar() {
     toolbarEl.textContent = '';
-    const keep = (btn) => {
-      btn.addEventListener('pointerdown', (e) => e.preventDefault());
-      btn.addEventListener('mousedown', (e) => e.preventDefault());
-      return btn;
+    const btn = (key, aria, onclick, label, cls = '') => {
+      const b = el('button', { type: 'button', class: `tb-btn ${cls}`, 'aria-label': aria, title: aria, onclick });
+      if (label) b.textContent = label;
+      else b.innerHTML = `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">${ICON[key]}</svg>`;
+      b.addEventListener('pointerdown', (e) => e.preventDefault());
+      b.addEventListener('mousedown', (e) => e.preventDefault());
+      return b;
     };
-    toolbarEl.append(keep(el('button', { type: 'button', class: 'tb-move', 'aria-label': '되돌리기', title: '되돌리기 (Cmd/Ctrl+Z)', onclick: () => undo() }, '↶')));
-    for (const [type, label] of TOOLBAR) {
-      toolbarEl.append(keep(el('button', {
-        type: 'button', 'data-type': type,
-        onclick: () => {
-          if (!note || readOnly) return;
-          const target = activeId && idx(activeId) >= 0 ? activeId : blocks()[blocks().length - 1]?.id;
-          if (target) setType(target, type, true);
-        },
-      }, label)));
-    }
-    for (const [dir, label, aria] of [[-1, '⇤', '내어쓰기'], [1, '⇥', '들여쓰기']]) {
-      toolbarEl.append(keep(el('button', {
-        type: 'button', class: 'tb-move', 'aria-label': aria, title: aria,
-        onclick: () => { if (note && !readOnly && activeId && idx(activeId) >= 0) indentBlock(activeId, dir); },
-      }, label)));
-    }
-    for (const [dir, label, aria] of [[-1, '↑', '위로 이동'], [1, '↓', '아래로 이동']]) {
-      toolbarEl.append(keep(el('button', {
-        type: 'button', class: 'tb-move', 'aria-label': aria, title: aria,
-        onclick: () => { if (note && !readOnly && activeId && idx(activeId) >= 0) moveBlock(activeId, dir); },
-      }, label)));
-    }
-    toolbarEl.append(keep(el('button', {
-      type: 'button', class: 'tb-move', 'aria-label': '블록 메뉴', title: '블록 메뉴',
-      onclick: () => { if (note && !readOnly && activeId && idx(activeId) >= 0) openBlockMenu(activeId); },
-    }, '⋯')));
-    toolbarEl.append(el('span', { class: 'tb-spacer' }),
-      keep(el('button', { type: 'button', class: 'tb-done', onclick: () => document.activeElement && document.activeElement.blur() }, '완료')));
+    const act = (fn) => () => { if (note && !readOnly) { const at = target(); if (at) fn(at); } };
+    toolbarEl.append(
+      btn('undo', '되돌리기', () => undo()),
+      btn('plus', '블록 추가', () => addBlockMenu()),
+      btn('', '형식 바꾸기', () => turnMenu(), 'Aa', 'tb-text'),
+      btn('todo', '체크리스트로 바꾸기', act((id) => setType(id, 'todo', true)), '', 'tb-todo'),
+      btn('outdent', '내어쓰기', act((id) => indentBlock(id, -1))),
+      btn('indent', '들여쓰기', act((id) => indentBlock(id, 1))),
+      btn('more', '블록 메뉴 (이동·색·복제·삭제)', act((id) => openBlockMenu(id))),
+      btn('', '키보드 내리기', () => document.activeElement && document.activeElement.blur(), '완료', 'tb-text tb-done'),
+    );
   }
   function updateToolbar() {
     const b = activeId ? find(activeId) : null;
-    toolbarEl.querySelectorAll('[data-type]').forEach((btn) => {
-      btn.classList.toggle('on', !!b && b.type !== 'p' && b.type === btn.dataset.type);
-    });
+    toolbarEl.querySelector('.tb-todo')?.classList.toggle('on', !!b && b.type === 'todo');
   }
   buildToolbar();
 

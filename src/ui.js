@@ -48,7 +48,7 @@ export function openOverlay(content, { onClose } = {}) {
 }
 
 // 선택지를 보여주고 고른 value(또는 null)를 돌려준다
-export function actionSheet(title, actions) {
+export function actionSheet(title, actions, note = '') {
   return new Promise((resolve) => {
     let picked = null;
     let close = () => {};
@@ -58,6 +58,7 @@ export function actionSheet(title, actions) {
         class: 'sheet-btn' + (a.danger ? ' danger' : ''), type: 'button',
         onclick: () => { picked = a.value ?? a.label; close(); },
       }, a.label)),
+      note ? el('p', { class: 'sheet-note' }, note) : null,
       el('button', { class: 'sheet-btn cancel', type: 'button', onclick: () => close() }, '취소'),
     );
     close = openOverlay(box, { onClose: () => resolve(picked) });

@@ -31,7 +31,7 @@ function addDemo(folderId) {
   const guide = mk(1, { title: '블록 사용법', icon: '🧱', parent_id: top.id });
   const todo = mk(2, { title: '이번 주 할 일', icon: '✅', parent_id: top.id });
   top.blocks = [
-    { ...newBlock('callout', '페이지 안에 페이지를 계속 만들어서 정리합니다. 왼쪽 목록의 ▸ 를 누르면 하위 페이지가 펼쳐집니다.'), icon: '💡' },
+    { ...newBlock('callout', '페이지 안에 페이지를 계속 만들어서 정리합니다. 목록에서 페이지 앞의 ▸ 를 누르면 하위 페이지가 펼쳐집니다.'), icon: '💡' },
     newBlock('h2', '하위 페이지'),
     { ...newBlock('page'), page_id: guide.id },
     { ...newBlock('page'), page_id: todo.id },
@@ -47,8 +47,8 @@ function addDemo(folderId) {
     newBlock('bullet', 'Tab 들여쓰기, Shift+Tab 내어쓰기'),
     newBlock('h2', '블록 다루기'),
     newBlock('number', '컴퓨터: 블록 왼쪽 ⋮⋮ 를 끌면 순서 변경, 누르면 메뉴'),
-    newBlock('number', '아이폰: 아래 도구 막대의 ↑ ↓ 와 ⋯'),
-    { ...newBlock('callout', '아이콘과 커버는 제목 위에 마우스를 올리거나, 페이지 메뉴(⋯)에서 바꿉니다.'), icon: '🎨' },
+    newBlock('number', '아이폰: 글을 쓸 때 키보드 위 막대의 + 로 블록 추가, ⋯ 로 이동·색·삭제'),
+    { ...newBlock('callout', '아이콘과 커버는 오른쪽 위 페이지 메뉴(⋯)에서 바꿉니다. 커버는 눌러서 바꿀 수도 있습니다.'), icon: '🎨' },
   ];
   todo.blocks = [
     { ...newBlock('todo', 'Memo를 홈 화면에 추가하기'), checked: false },
