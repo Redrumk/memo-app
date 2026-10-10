@@ -1,4 +1,4 @@
-// 데이터 저장소: 이 기기(localStorage)에 항상 저장하고, 동기화는 sync.js가 담당한다.
+// 데이터 저장소: 이 기기(IndexedDB, 안 되면 localStorage)에 항상 저장하고, 동기화는 sync.js가 담당한다.
 // 각 항목의 dirty=서버에 아직 안 올라감, synced=서버에 한 번이라도 올라감, shared=다른 사람 소유
 
 const KEY = 'memo.data.v1';
@@ -56,22 +56,68 @@ function addDemo(folderId) {
   state.notes.push(top, guide, todo);
 }
 
-function load() {
-  try {
-    const raw = localStorage.getItem(KEY);
-    if (raw) {
-      const d = JSON.parse(raw);
-      return { folders: d.folders || [], notes: d.notes || [], meta: { purged: [], ...(d.meta || {}) } };
-    }
-  } catch (e) { console.warn('load failed', e); }
-  return seed();
+const normalize = (d) => ({ folders: d.folders || [], notes: d.notes || [], meta: { purged: [], ...(d.meta || {}) } });
+
+// ---------- IndexedDB (용량이 커서 사진이 많아도 버틴다) ----------
+let db = null;
+function openDB() {
+  return new Promise((resolve, reject) => {
+    if (!('indexedDB' in window)) { reject(new Error('no indexedDB')); return; }
+    const req = indexedDB.open('memo', 1);
+    req.onupgradeneeded = () => req.result.createObjectStore('kv');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+    setTimeout(() => reject(new Error('indexedDB timeout')), 4000);
+  });
+}
+function idbGet(key) {
+  return new Promise((resolve, reject) => {
+    const r = db.transaction('kv').objectStore('kv').get(key);
+    r.onsuccess = () => resolve(r.result); r.onerror = () => reject(r.error);
+  });
+}
+function idbPut(key, value) {
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction('kv', 'readwrite');
+    tx.objectStore('kv').put(value, key);
+    tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
+  });
+}
+function readLocal() {
+  try { const raw = localStorage.getItem(KEY); return raw ? JSON.parse(raw) : null; } catch { return null; }
 }
 
-let state = load();
-if (!state.meta.demo2) {
-  const f = state.folders.find((x) => !x.deleted);
-  if (f) addDemo(f.id);
-  state.meta.demo2 = true;
+let state = normalize({});
+export let storageKind = 'local';
+
+// 앱 시작 시 한 번: 저장된 데이터를 불러오고, 예전 localStorage 데이터는 IndexedDB로 옮긴다
+export async function init() {
+  let data = null;
+  try {
+    db = await openDB();
+    data = await idbGet('data');
+    storageKind = 'idb';
+    if (!data) {
+      const old = readLocal();
+      if (old) {
+        data = old;
+        await idbPut('data', JSON.parse(JSON.stringify(old)));
+        try { localStorage.removeItem(KEY); } catch { /* 무시 */ }
+      }
+    }
+  } catch (e) {
+    console.warn('IndexedDB unavailable, using localStorage', e);
+    db = null; storageKind = 'local';
+    data = readLocal();
+  }
+  state = data ? normalize(data) : seed();
+  if (!state.meta.demo2) {
+    const f = state.folders.find((x) => !x.deleted);
+    if (f) addDemo(f.id);
+    state.meta.demo2 = true;
+  }
+  flush();
+  try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch { /* 지원 안 함 */ }
 }
 const listeners = new Set();
 let saveTimer = null;
@@ -79,7 +125,12 @@ let lockFn = () => null;
 
 export function flush() {
   clearTimeout(saveTimer); saveTimer = null;
-  try { localStorage.setItem(KEY, JSON.stringify(state)); }
+  const json = JSON.stringify(state);
+  if (db) {
+    idbPut('data', JSON.parse(json)).catch((e) => { console.error(e); listeners.forEach((fn) => fn('save-error')); });
+    return;
+  }
+  try { localStorage.setItem(KEY, json); }
   catch (e) { console.error(e); listeners.forEach((fn) => fn('save-error')); }
 }
 function persist() { clearTimeout(saveTimer); saveTimer = setTimeout(flush, 300); }

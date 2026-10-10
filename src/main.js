@@ -618,4 +618,4 @@ function init() {
   }
 }
 
-init();
+store.init().then(init, (e) => { console.error(e); init(); });
