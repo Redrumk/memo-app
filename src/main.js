@@ -43,7 +43,7 @@ function readUI() {
   try { return JSON.parse(localStorage.getItem(UI_KEY)) || {}; } catch { return {}; }
 }
 const saved = readUI();
-const ui = { pageId: saved.pageId || null, view: saved.view === 'page' ? 'page' : 'tree' };
+const ui = { pageId: saved.pageId || null, view: saved.view === 'page' ? 'page' : 'tree', recent: Array.isArray(saved.recent) ? saved.recent : [] };
 const expanded = new Set(saved.expanded || []);
 const collapsedSections = new Set(saved.collapsed || []);
 let query = '';
@@ -52,7 +52,7 @@ let settingsRedraw = null;
 const isMobile = () => window.matchMedia('(max-width: 759px)').matches;
 function saveUI() {
   try {
-    localStorage.setItem(UI_KEY, JSON.stringify({ pageId: ui.pageId, view: ui.view, expanded: [...expanded], collapsed: [...collapsedSections] }));
+    localStorage.setItem(UI_KEY, JSON.stringify({ pageId: ui.pageId, view: ui.view, recent: ui.recent, expanded: [...expanded], collapsed: [...collapsedSections] }));
   } catch { /* 저장 불가 환경 */ }
 }
 function setView(v) { ui.view = v; app.dataset.view = v; saveUI(); }
@@ -118,6 +118,15 @@ function renderTree() {
     }
     if (!res.length) tree.append(el('div', { class: 'tree-empty', style: '--depth:0' }, '결과가 없습니다'));
     return;
+  }
+  const recent = ui.recent.map((id) => store.getNote(id)).filter((n) => n && !n.deleted).slice(0, 5);
+  if (recent.length) {
+    tree.append(el('div', { class: 'section-head static mobile-only' }, el('span', { class: 'section-name' }, '최근')));
+    for (const n of recent) {
+      tree.append(el('button', { class: 'result-row mobile-only', type: 'button', onclick: () => openPage(n.id) },
+        pageIco(n), el('span', { class: 'result-text' }, el('span', { class: 'tree-title' }, titleOf(n)),
+          el('small', {}, [store.getFolder(n.folder_id)?.name, ...store.ancestors(n.id).map(titleOf)].filter(Boolean).join(' / ')))));
+    }
   }
   const favs = store.favorites();
   if (favs.length) {
@@ -252,6 +261,7 @@ function openPage(id, { focus, keepView } = {}) {
   cleanupEmpty(id);
   const n = store.getNote(id); if (!n) return;
   ui.pageId = id;
+  ui.recent = [id, ...ui.recent.filter((x) => x !== id)].slice(0, 8);
   query = ''; $('#search').value = '';
   store.ancestors(id).forEach((a) => expanded.add(a.id));
   if (store.childPages(id).length) expanded.add(id);
@@ -334,6 +344,9 @@ async function pageMenu(id) {
     { label: '하위 페이지 추가', value: 'sub' },
     { label: n.icon ? '아이콘 바꾸기' : '아이콘 추가', value: 'icon' },
     { label: n.cover ? '커버 바꾸기' : '커버 추가', value: 'cover' },
+    { label: '위로 이동', value: 'up' },
+    { label: '아래로 이동', value: 'down' },
+    { label: '다른 페이지 안으로 이동', value: 'nest' },
     { label: '다른 섹션으로 이동', value: 'move' },
     { label: '복제', value: 'dup' },
     { label: '텍스트로 내보내기', value: 'export' },
@@ -343,6 +356,17 @@ async function pageMenu(id) {
   else if (a === 'sub') newPage(n.folder_id, n.id);
   else if (a === 'icon') emojiPicker((e) => store.updateNote(n.id, { icon: e }), !!n.icon);
   else if (a === 'cover') coverPicker(n.id);
+  else if (a === 'up' || a === 'down') { if (!store.reorderSibling(n.id, a === 'up' ? -1 : 1)) toast(a === 'up' ? '이미 맨 위입니다' : '이미 맨 아래입니다'); }
+  else if (a === 'nest') {
+    const banned = new Set([n.id]);
+    for (const p of store.allPages()) if (store.ancestors(p.id).some((x) => x.id === n.id)) banned.add(p.id);
+    const cands = store.allPages().filter((p) => !banned.has(p.id) && p.id !== n.parent_id).slice(0, 40);
+    if (!cands.length) { toast('옮길 수 있는 페이지가 없습니다'); return; }
+    const to = await actionSheet('어느 페이지 안으로 옮길까요?', cands.map((p) => ({
+      label: `${p.icon || '📄'}  ${[...store.ancestors(p.id).map(titleOf), titleOf(p)].join(' / ')}`, value: p.id,
+    })));
+    if (to && store.moveUnder(n.id, to)) { expanded.add(to); toast('옮겼습니다'); }
+  }
   else if (a === 'move') {
     const fs = store.listFolders();
     const to = await actionSheet('이동할 섹션 (맨 위 단계로 이동)', fs.map((f) => ({ label: f.id === n.folder_id ? `${f.name} (현재)` : f.name, value: f.id })));

@@ -100,7 +100,7 @@ export function listFolders() {
   return state.folders.filter((f) => !f.deleted).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
 }
 export function noteText(n) {
-  return (n.blocks || []).map((b) => (b.rows ? b.rows.flat().join(' ') : b.text || '')).join('\n');
+  return (n.blocks || []).map((b) => (b.rows ? b.rows.flat().join(' ') : b.url ? b.url : b.text || '')).join('\n');
 }
 export function preview(n) {
   const b = (n.blocks || []).find((x) => x.text && x.text.trim());
@@ -221,8 +221,37 @@ export function purgeNote(id) {
   state.notes = state.notes.filter((x) => !ids.has(x.id));
   commit('data');
 }
+// 부모 페이지 본문에 있는 이 페이지 링크 블록을 지운다
+function unlinkFromParent(n) {
+  const p = n.parent_id && getNote(n.parent_id);
+  if (p && (p.blocks || []).some((b) => b.page_id === n.id)) { p.blocks = p.blocks.filter((b) => b.page_id !== n.id); touch(p); }
+}
+export function moveUnder(id, parentId) {
+  const n = getNote(id); const p = getNote(parentId);
+  if (!n || !p || id === parentId || ancestors(parentId).some((a) => a.id === id)) return false;
+  unlinkFromParent(n);
+  n.parent_id = parentId;
+  for (const x of [n, ...descendants(id)]) { x.folder_id = p.folder_id; touch(x); }
+  p.blocks = [...(p.blocks || []), { ...newBlock('page'), page_id: n.id }]; touch(p);
+  commit('data');
+  return true;
+}
+// 같은 단계 안에서 순서 바꾸기 (생성 시각을 맞바꿔 순서를 정한다)
+export function reorderSibling(id, dir) {
+  const n = getNote(id); if (!n) return false;
+  const sibs = liveParent(n) ? childPages(n.parent_id) : topPages(n.folder_id);
+  const i = sibs.findIndex((x) => x.id === id); const other = sibs[i + dir];
+  if (!other) return false;
+  let a = n.created_at; let b = other.created_at;
+  if (a === b) b = new Date(Date.parse(b) + dir).toISOString();
+  n.created_at = b; other.created_at = a;
+  touch(n); touch(other); commit('data');
+  return true;
+}
+export function allPages() { return state.notes.filter((n) => !n.deleted).sort(byCreated); }
 export function moveNote(id, folderId) {
   const n = getNote(id); if (!n) return;
+  unlinkFromParent(n);
   n.parent_id = null;
   for (const x of [n, ...descendants(id)]) { x.folder_id = folderId; touch(x); }
   commit('data');
@@ -338,6 +367,7 @@ export function toMarkdown(n) {
       case 'todo': out.push(`- [${b.checked ? 'x' : ' '}] ${t}`); break;
       case 'quote': out.push(`> ${t}`); break;
       case 'divider': out.push('---'); break;
+      case 'link': out.push(b.url || ''); break;
       case 'image': out.push('(이미지)'); break;
       default: out.push(t);
     }

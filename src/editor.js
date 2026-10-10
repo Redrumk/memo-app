@@ -1,5 +1,5 @@
 // 블록 에디터: 블록마다 contenteditable 한 줄. 서식 없는 텍스트만 저장한다.
-import { el, toast, actionSheet } from './ui.js';
+import { el, toast, actionSheet, promptDialog } from './ui.js';
 import { newBlock } from './store.js';
 
 const TEXT_TYPES = new Set(['p', 'h1', 'h2', 'bullet', 'number', 'todo', 'quote', 'callout', 'toggle']);
@@ -17,6 +17,7 @@ export const BLOCK_TYPES = [
   { type: 'table', label: '표', hint: '간단한 표', icon: '▦', keys: ['table', '표'] },
   { type: 'quote', label: '인용', hint: '인용문', icon: '❝', keys: ['quote', '인용'] },
   { type: 'callout', label: '콜아웃', hint: '아이콘이 있는 강조 상자', icon: '💡', keys: ['callout', 'note', '콜아웃', '강조'] },
+  { type: 'link', label: '링크', hint: '웹 주소 북마크', icon: '🔗', keys: ['link', 'url', '링크', '북마크'] },
   { type: 'divider', label: '구분선', hint: '가로줄', icon: '—', keys: ['divider', 'hr', 'line', '구분'] },
   { type: 'image', label: '이미지', hint: '사진 첨부', icon: '▣', keys: ['image', 'img', 'photo', '이미지', '사진'] },
 ];
@@ -243,6 +244,15 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
       });
       row.append(tg);
     }
+    if (b.type === 'link') {
+      row.tabIndex = 0;
+      let host = '';
+      try { host = new URL(b.url).hostname.replace(/^www\./, ''); } catch { host = ''; }
+      row.append(el('a', { class: 'link-card', href: b.url || '#', target: '_blank', rel: 'noopener noreferrer' },
+        el('span', { class: 'link-ico', 'aria-hidden': 'true' }, '🔗'),
+        el('span', { class: 'link-text' }, el('span', { class: 'link-host' }, host || '링크'), el('span', { class: 'link-url' }, b.url || ''))));
+      return row;
+    }
     if (b.type === 'page') {
       row.tabIndex = 0;
       const p = hooks.getPage ? hooks.getPage(b.page_id) : null;
@@ -381,6 +391,14 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
   function setType(id, type, toggle = false) {
     const b = find(id); if (!b) return;
     if (type === 'image') { pickImage(id); return; }
+    if (type === 'link') {
+      promptDialog('링크 주소', 'https://', { ok: '추가' }).then((url) => {
+        const u = (url || '').trim();
+        if (!/^https?:\/\/\S+\.\S+/.test(u)) { if (u && u !== 'https://') toast('http:// 또는 https:// 로 시작하는 주소를 넣어주세요'); return; }
+        insertLink(id, u);
+      });
+      return;
+    }
     if (type === 'table') {
       const rows = [['', '', ''], ['', '', ''], ['', '', '']];
       let tid = id;
@@ -482,6 +500,16 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
     focusBlock(id, off);
     row.scrollIntoView({ block: 'nearest' });
     save();
+  }
+
+  function insertLink(id, url) {
+    const b = find(id); if (!b) return;
+    let lid = id;
+    if (TEXT_TYPES.has(b.type) && !(b.text || '').trim()) { b.type = 'link'; b.url = url; b.text = ''; delete b.checked; replaceRow(b); }
+    else lid = insertAfter(id, { ...newBlock('link'), url }).id;
+    let next = blocks()[idx(lid) + 1];
+    if (!next || !TEXT_TYPES.has(next.type)) next = insertAfter(lid, newBlock());
+    focusBlock(next.id, 'start'); save();
   }
 
   // 핸들 끌기: 놓은 위치로 이동, 움직이지 않고 떼면 블록 메뉴
@@ -749,6 +777,7 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
     const text = clean((e.clipboardData.getData('text/plain') || '').replace(/\r\n?/g, '\n'));
     if (!text) return;
     const lines = text.split('\n');
+    if (lines.length === 1 && /^https?:\/\/\S+$/.test(text.trim()) && !clean(t.textContent).trim()) { insertLink(id, text.trim()); return; }
     if (lines.length === 1) {
       if (!document.execCommand('insertText', false, text)) {
         const off = caretOffset(t); const cur = t.textContent;
