@@ -14,6 +14,8 @@
   --check: #2f80ed;
   --shadow: 0 10px 32px rgba(15, 15, 15, 0.16);
   --kb: 0px;
+  --bc-gray: #f1f1ef; --bc-brown: #f4eeee; --bc-orange: #fbecdd; --bc-yellow: #fbf3db; --bc-green: #edf3ec;
+  --bc-blue: #e7f3f8; --bc-purple: #f6f3f9; --bc-pink: #faf1f5; --bc-red: #fdebec;
   color-scheme: light;
 }
 @media (prefers-color-scheme: dark) {
@@ -23,6 +25,8 @@
     --text: #e9e9e7; --text-2: #9b9a97; --text-3: #6f6e69; --line: rgba(255, 255, 255, 0.09);
     --accent: #e6b422; --accent-ink: #e6b422; --accent-soft: rgba(230, 180, 34, 0.18);
     --shadow: 0 10px 32px rgba(0, 0, 0, 0.5);
+    --bc-gray: #2f2f2f; --bc-brown: #4a3228; --bc-orange: #5c3b23; --bc-yellow: #56452f; --bc-green: #243d30;
+    --bc-blue: #143a4e; --bc-purple: #3c2d49; --bc-pink: #4e2c3c; --bc-red: #522e2a;
     color-scheme: dark;
   }
 }
@@ -32,6 +36,8 @@
   --text: #e9e9e7; --text-2: #9b9a97; --text-3: #6f6e69; --line: rgba(255, 255, 255, 0.09);
   --accent: #e6b422; --accent-ink: #e6b422; --accent-soft: rgba(230, 180, 34, 0.18);
   --shadow: 0 10px 32px rgba(0, 0, 0, 0.5);
+  --bc-gray: #2f2f2f; --bc-brown: #4a3228; --bc-orange: #5c3b23; --bc-yellow: #56452f; --bc-green: #243d30;
+  --bc-blue: #143a4e; --bc-purple: #3c2d49; --bc-pink: #4e2c3c; --bc-red: #522e2a;
   color-scheme: dark;
 }
 
@@ -416,3 +422,15 @@ button.crumb:hover { background: var(--bg-hover); color: var(--text); }
 .link-url { font-size: 12px; color: var(--text-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .mobile-only { display: none; }
 @media (max-width: 759px) { .mobile-only { display: flex; } }
+
+/* ---------- block colors ---------- */
+.block.colored { border-radius: 5px; padding-left: 6px; padding-right: 6px; }
+.bc-gray { background: var(--bc-gray); }
+.bc-brown { background: var(--bc-brown); }
+.bc-orange { background: var(--bc-orange); }
+.bc-yellow { background: var(--bc-yellow); }
+.bc-green { background: var(--bc-green); }
+.bc-blue { background: var(--bc-blue); }
+.bc-purple { background: var(--bc-purple); }
+.bc-pink { background: var(--bc-pink); }
+.bc-red { background: var(--bc-red); }

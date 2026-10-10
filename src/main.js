@@ -584,6 +584,35 @@ function bind() {
   document.addEventListener('keydown', (e) => {
     if ((e.metaKey || e.ctrlKey) && e.altKey && e.code === 'KeyN') { e.preventDefault(); newPage(currentFolderId(), null); }
   });
+  // 아이폰: 화면 왼쪽 끝에서 오른쪽으로 밀면 뒤로 가기 (홈 화면 앱에는 브라우저 뒤로 가기 제스처가 없다)
+  const pane = $('.pane-editor');
+  let sx = null; let sy = 0;
+  const reset = (animate) => {
+    pane.style.transition = animate ? 'transform 0.18s ease' : '';
+    pane.style.transform = '';
+    if (animate) setTimeout(() => { pane.style.transition = ''; }, 200);
+  };
+  pane.addEventListener('touchstart', (e) => {
+    const t = e.touches[0];
+    sx = isMobile() && t.clientX < 28 ? t.clientX : null; sy = t.clientY;
+  }, { passive: true });
+  pane.addEventListener('touchmove', (e) => {
+    if (sx == null) return;
+    const t = e.touches[0]; const dx = t.clientX - sx;
+    if (Math.abs(t.clientY - sy) > 50 && dx < 30) { sx = null; reset(true); return; }
+    if (dx > 0) pane.style.transform = `translateX(${dx}px)`;
+  }, { passive: true });
+  const end = (e) => {
+    if (sx == null) return;
+    const dx = (e.changedTouches[0] || {}).clientX - sx; sx = null;
+    if (dx > 90) {
+      pane.style.transition = 'transform 0.18s ease'; pane.style.transform = 'translateX(100%)';
+      setTimeout(() => { reset(false); goBack(); }, 180);
+    } else reset(true);
+  };
+  pane.addEventListener('touchend', end);
+  pane.addEventListener('touchcancel', () => { sx = null; reset(true); });
+
   // 아이폰 키보드 위에 도구 막대를 붙이기 위한 키보드 높이
   if (window.visualViewport) {
     const vv = window.visualViewport;

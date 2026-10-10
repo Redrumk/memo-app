@@ -155,6 +155,7 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
   function buildRow(b) {
     const row = el('div', { class: `block block-${b.type}`, 'data-id': b.id });
     if (b.indent) row.style.setProperty('--indent', b.indent);
+    if (b.color) row.classList.add('colored', `bc-${b.color}`);
     if (b.type === 'table') {
       if (!Array.isArray(b.rows) || !b.rows.length) b.rows = [['', ''], ['', '']];
       const table = el('table', { class: 'tbl' });
@@ -558,6 +559,7 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
     const a = await actionSheet(null, [
       { label: '아래에 블록 추가', value: 'add' },
       { label: '형식 바꾸기', value: 'turn' },
+      { label: '배경색', value: 'color' },
       { label: '복제', value: 'dup' },
       { label: '위로 이동', value: 'up' },
       { label: '아래로 이동', value: 'down' },
@@ -568,6 +570,10 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
     else if (a === 'turn') {
       const t = await actionSheet('형식 바꾸기', BLOCK_TYPES.filter((x) => TEXT_TYPES.has(x.type)).map((x) => ({ label: x.label, value: x.type })));
       if (t && find(id)) setType(id, t);
+    } else if (a === 'color') {
+      const COLORS = [['', '기본'], ['gray', '회색'], ['brown', '갈색'], ['orange', '주황'], ['yellow', '노랑'], ['green', '초록'], ['blue', '파랑'], ['purple', '보라'], ['pink', '분홍'], ['red', '빨강']];
+      const c = await actionSheet('배경색', COLORS.map(([k, l]) => ({ label: l, value: k || 'none' })));
+      if (c && find(id)) { if (c === 'none') delete b.color; else b.color = c; replaceRow(b); save(); }
     } else if (a === 'dup') {
       const nb = insertAfter(id, { ...JSON.parse(JSON.stringify(b)), id: newBlock().id });
       focusBlock(nb.id, 'end'); save();
