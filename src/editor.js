@@ -1,0 +1,536 @@
+// 블록 에디터: 블록마다 contenteditable 한 줄. 서식 없는 텍스트만 저장한다.
+import { el, toast } from './ui.js';
+import { newBlock } from './store.js';
+
+const TEXT_TYPES = new Set(['p', 'h1', 'h2', 'bullet', 'todo', 'quote']);
+
+export const BLOCK_TYPES = [
+  { type: 'p', label: '텍스트', hint: '일반 문단', icon: 'T', keys: ['text', 'p', '텍스트', '본문'] },
+  { type: 'h1', label: '제목', hint: '큰 제목', icon: 'H1', keys: ['h1', 'heading', '제목'] },
+  { type: 'h2', label: '소제목', hint: '작은 제목', icon: 'H2', keys: ['h2', '소제목'] },
+  { type: 'bullet', label: '목록', hint: '글머리 기호', icon: '•', keys: ['list', 'bullet', 'ul', '목록'] },
+  { type: 'todo', label: '체크리스트', hint: '할 일', icon: '☐', keys: ['todo', 'check', '체크', '할일'] },
+  { type: 'quote', label: '인용', hint: '인용문', icon: '❝', keys: ['quote', '인용'] },
+  { type: 'divider', label: '구분선', hint: '가로줄', icon: '—', keys: ['divider', 'hr', 'line', '구분'] },
+  { type: 'image', label: '이미지', hint: '사진 첨부', icon: '▣', keys: ['image', 'img', 'photo', '이미지', '사진'] },
+];
+
+const TOOLBAR = [['p', '본문'], ['h1', '제목'], ['h2', '소제목'], ['bullet', '목록'], ['todo', '체크'], ['quote', '인용'], ['divider', '구분선'], ['image', '사진']];
+
+const PLACEHOLDER = { p: "입력하거나 '/'로 블록 선택", h1: '제목', h2: '소제목', bullet: '목록', todo: '할 일', quote: '인용' };
+
+const SHORTCUTS = [
+  [/^#\s/, 'h1'], [/^##\s/, 'h2'], [/^[-*•]\s/, 'bullet'], [/^\[[\sxX]?\]\s/, 'todo'], [/^>\s/, 'quote'],
+];
+
+const EDITABLE = (() => {
+  try {
+    const d = document.createElement('div');
+    d.contentEditable = 'plaintext-only';
+    return d.contentEditable === 'plaintext-only' ? 'plaintext-only' : 'true';
+  } catch { return 'true'; }
+})();
+
+const clean = (s) => s.replace(/ /g, ' ');
+
+function setCaret(node, offset) {
+  const sel = window.getSelection();
+  const range = document.createRange();
+  let remaining = offset;
+  const walker = document.createTreeWalker(node, NodeFilter.SHOW_TEXT);
+  let t;
+  while ((t = walker.nextNode())) {
+    if (remaining <= t.length) {
+      range.setStart(t, remaining); range.collapse(true);
+      sel.removeAllRanges(); sel.addRange(range);
+      return;
+    }
+    remaining -= t.length;
+  }
+  range.selectNodeContents(node); range.collapse(false);
+  sel.removeAllRanges(); sel.addRange(range);
+}
+
+function caretOffset(node) {
+  const sel = window.getSelection();
+  if (!sel.rangeCount) return 0;
+  const r = sel.getRangeAt(0);
+  if (!node.contains(r.startContainer)) return 0;
+  const pre = document.createRange();
+  pre.selectNodeContents(node);
+  pre.setEnd(r.startContainer, r.startOffset);
+  return pre.toString().length;
+}
+
+const collapsed = () => { const s = window.getSelection(); return !s.rangeCount || s.isCollapsed; };
+
+async function fileToDataURL(file, max = 1600) {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise((res, rej) => { const i = new Image(); i.onload = () => res(i); i.onerror = rej; i.src = url; });
+    const scale = Math.min(1, max / Math.max(img.naturalWidth, img.naturalHeight));
+    const w = Math.round(img.naturalWidth * scale);
+    const h = Math.round(img.naturalHeight * scale);
+    const c = document.createElement('canvas');
+    c.width = w; c.height = h;
+    const ctx = c.getContext('2d');
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, 0, 0, w, h);
+    return c.toDataURL('image/jpeg', 0.82);
+  } finally { URL.revokeObjectURL(url); }
+}
+
+export function createEditor({ blocksEl, titleEl, toolbarEl, onChange }) {
+  let note = null;
+  let readOnly = false;
+  let activeId = null;
+  let slash = null;           // { blockId, menu, items, index }
+  let slashDismissed = null;  // Esc로 닫은 블록 id
+
+  const blocks = () => (note ? note.blocks : []);
+  const idx = (id) => blocks().findIndex((b) => b.id === id);
+  const find = (id) => blocks()[idx(id)];
+  const rowOf = (id) => blocksEl.querySelector(`.block[data-id="${CSS.escape(id)}"]`);
+  const textOf = (id) => rowOf(id)?.querySelector('.text');
+  const save = () => { if (note && !readOnly) onChange(note); };
+
+  // ---------- 렌더링 ----------
+  function renderBlock(b) {
+    const row = el('div', { class: `block block-${b.type}`, 'data-id': b.id });
+    if (b.type === 'divider') { row.tabIndex = 0; row.append(el('hr')); return row; }
+    if (b.type === 'image') {
+      row.tabIndex = 0;
+      row.append(el('img', { src: b.src || '', alt: '', draggable: 'false' }));
+      if (!readOnly) {
+        row.append(el('button', {
+          type: 'button', class: 'block-remove', 'aria-label': '이미지 삭제',
+          onclick: () => { const i = idx(b.id); removeBlock(b.id); const p = blocks()[Math.max(0, i - 1)]; if (p) focusBlock(p.id, 'end'); save(); },
+        }, '×'));
+      }
+      return row;
+    }
+    if (b.type === 'todo') {
+      const cb = el('input', { type: 'checkbox', class: 'todo-check', 'aria-label': '완료', disabled: readOnly });
+      cb.checked = !!b.checked;
+      if (b.checked) row.classList.add('done');
+      cb.addEventListener('change', () => { b.checked = cb.checked; row.classList.toggle('done', b.checked); save(); });
+      row.append(cb);
+    }
+    if (b.type === 'bullet') row.append(el('span', { class: 'bullet-dot', 'aria-hidden': 'true' }, '•'));
+    const t = el('div', {
+      class: 'text', contenteditable: readOnly ? 'false' : EDITABLE,
+      'data-placeholder': PLACEHOLDER[b.type] || '', spellcheck: 'false',
+    });
+    t.textContent = b.text || '';
+    row.append(t);
+    return row;
+  }
+
+  function render() {
+    blocksEl.textContent = '';
+    for (const b of blocks()) blocksEl.append(renderBlock(b));
+  }
+  function replaceRow(b) {
+    const old = rowOf(b.id); const row = renderBlock(b);
+    if (old) old.replaceWith(row); else blocksEl.append(row);
+    return row;
+  }
+  function insertAfter(refId, b) {
+    const i = idx(refId);
+    blocks().splice(i + 1, 0, b);
+    const ref = rowOf(refId); const row = renderBlock(b);
+    if (ref) ref.after(row); else blocksEl.append(row);
+    return b;
+  }
+  function insertBefore(refId, b) {
+    const i = idx(refId);
+    blocks().splice(Math.max(0, i), 0, b);
+    const ref = rowOf(refId); const row = renderBlock(b);
+    if (ref) ref.before(row); else blocksEl.prepend(row);
+    return b;
+  }
+  function removeBlock(id) {
+    const i = idx(id); if (i < 0) return;
+    blocks().splice(i, 1);
+    rowOf(id)?.remove();
+    if (!blocks().length) { const b = newBlock(); blocks().push(b); blocksEl.append(renderBlock(b)); }
+  }
+  function focusBlock(id, pos = 'end') {
+    const row = rowOf(id); if (!row) return;
+    activeId = id;
+    const t = row.querySelector('.text');
+    if (!t) { row.focus(); updateToolbar(); return; }
+    t.focus();
+    const len = t.textContent.length;
+    setCaret(t, pos === 'start' ? 0 : pos === 'end' ? len : Math.min(pos, len));
+    updateToolbar();
+  }
+
+  // ---------- 블록 형식 변경 ----------
+  function setType(id, type, toggle = false) {
+    const b = find(id); if (!b) return;
+    if (type === 'image') { pickImage(id); return; }
+    if (type === 'divider') {
+      let divId = id;
+      if (TEXT_TYPES.has(b.type) && !(b.text || '').trim()) { b.type = 'divider'; b.text = ''; delete b.checked; replaceRow(b); }
+      else divId = insertAfter(id, newBlock('divider')).id;
+      let next = blocks()[idx(divId) + 1];
+      if (!next || !TEXT_TYPES.has(next.type)) next = insertAfter(divId, newBlock());
+      focusBlock(next.id, 'start'); save();
+      return;
+    }
+    if (!TEXT_TYPES.has(b.type)) { const nb = insertAfter(id, newBlock(type)); focusBlock(nb.id, 'start'); save(); return; }
+    const t = textOf(id);
+    const off = t && document.activeElement === t ? caretOffset(t) : (b.text || '').length;
+    b.type = toggle && b.type === type && type !== 'p' ? 'p' : type;
+    if (b.type === 'todo') b.checked = !!b.checked; else delete b.checked;
+    replaceRow(b); focusBlock(id, off); save();
+  }
+
+  function applyShortcut(b, text) {
+    if (text === '---') {
+      b.type = 'divider'; b.text = ''; replaceRow(b);
+      let next = blocks()[idx(b.id) + 1];
+      if (!next || !TEXT_TYPES.has(next.type)) next = insertAfter(b.id, newBlock());
+      focusBlock(next.id, 'start'); save();
+      return true;
+    }
+    for (const [re, type] of SHORTCUTS) {
+      const m = text.match(re);
+      if (m) {
+        b.type = type; b.text = text.slice(m[0].length);
+        if (type === 'todo') b.checked = /x/i.test(m[0]);
+        replaceRow(b); focusBlock(b.id, 'start'); save();
+        return true;
+      }
+    }
+    return false;
+  }
+
+  function splitAt(id) {
+    const b = find(id); const t = textOf(id); if (!b || !t) return;
+    const s = window.getSelection();
+    if (s.rangeCount && !s.isCollapsed && t.contains(s.anchorNode)) s.deleteFromDocument();
+    const text = clean(t.textContent);
+    if (!text && b.type !== 'p') { b.type = 'p'; delete b.checked; replaceRow(b); focusBlock(id, 'start'); save(); return; }
+    const off = caretOffset(t);
+    const listType = b.type === 'bullet' || b.type === 'todo' ? b.type : 'p';
+    if (off === 0 && text) {
+      const nb = newBlock(listType); if (listType === 'todo') nb.checked = false;
+      insertBefore(id, nb); b.text = text; focusBlock(id, 'start'); save();
+      return;
+    }
+    b.text = text.slice(0, off); t.textContent = b.text;
+    const nb = newBlock(listType, text.slice(off)); if (listType === 'todo') nb.checked = false;
+    insertAfter(id, nb); focusBlock(nb.id, 'start'); save();
+  }
+
+  // 줄 맨 앞에서 지우기: 형식 해제 → 위 블록과 합치기
+  function backspaceAtStart(id) {
+    const i = idx(id); const b = blocks()[i]; if (!b) return false;
+    if (b.type !== 'p') { b.type = 'p'; delete b.checked; replaceRow(b); focusBlock(id, 0); save(); return true; }
+    const prev = blocks()[i - 1]; if (!prev) return false;
+    if (!TEXT_TYPES.has(prev.type)) { removeBlock(prev.id); save(); return true; }
+    const plen = (prev.text || '').length;
+    prev.text = (prev.text || '') + (b.text || '');
+    const pt = textOf(prev.id); if (pt) pt.textContent = prev.text;
+    removeBlock(id); focusBlock(prev.id, plen); save();
+    return true;
+  }
+
+  // ---------- 이미지 ----------
+  async function insertImageFile(afterId, file) {
+    const target = note;
+    try {
+      const src = await fileToDataURL(file);
+      if (note !== target) return;
+      const b = find(afterId);
+      let imgId;
+      if (b && TEXT_TYPES.has(b.type) && !(b.text || '').trim()) {
+        b.type = 'image'; b.src = src; b.text = ''; delete b.checked; replaceRow(b); imgId = b.id;
+      } else {
+        imgId = insertAfter(afterId, { ...newBlock('image'), src }).id;
+      }
+      let next = blocks()[idx(imgId) + 1];
+      if (!next || !TEXT_TYPES.has(next.type)) next = insertAfter(imgId, newBlock());
+      focusBlock(next.id, 'start'); save();
+    } catch (e) { console.error(e); toast('이미지를 불러오지 못했습니다'); }
+  }
+  function pickImage(afterId) {
+    const inp = el('input', { type: 'file', accept: 'image/*' });
+    inp.addEventListener('change', () => { if (inp.files && inp.files[0]) insertImageFile(afterId, inp.files[0]); });
+    inp.click();
+  }
+
+  // ---------- 슬래시 메뉴 ----------
+  function filterTypes(q) {
+    q = q.trim().toLowerCase();
+    if (!q) return BLOCK_TYPES;
+    return BLOCK_TYPES.filter((x) => x.label.toLowerCase().includes(q) || x.keys.some((k) => k.startsWith(q)));
+  }
+  function openOrUpdateSlash(b, q) {
+    if (slashDismissed === b.id) return;
+    const items = filterTypes(q);
+    if (!items.length) { closeSlash(); return; }
+    if (!slash || slash.blockId !== b.id) {
+      closeSlash();
+      const menu = el('div', { class: 'slash-menu', role: 'listbox' });
+      document.body.append(menu);
+      slash = { blockId: b.id, menu, items, index: 0 };
+    }
+    slash.items = items;
+    slash.index = Math.min(slash.index, items.length - 1);
+    drawSlash(); positionSlash();
+  }
+  function drawSlash() {
+    const { menu, items, index } = slash;
+    menu.textContent = '';
+    items.forEach((it, k) => {
+      const btn = el('button', { type: 'button', class: 'slash-item' + (k === index ? ' sel' : ''), role: 'option' },
+        el('span', { class: 'slash-icon' }, it.icon),
+        el('span', { class: 'slash-label' }, it.label, el('small', {}, it.hint)));
+      btn.addEventListener('mousedown', (e) => e.preventDefault());
+      btn.addEventListener('click', () => { slash.index = k; chooseSlash(); });
+      menu.append(btn);
+    });
+    menu.children[index]?.scrollIntoView({ block: 'nearest' });
+  }
+  function positionSlash() {
+    if (!slash) return;
+    const row = rowOf(slash.blockId); if (!row) return;
+    const r = row.getBoundingClientRect();
+    const h = slash.menu.offsetHeight || 300;
+    const vv = window.visualViewport;
+    const viewH = vv ? vv.height + vv.offsetTop : window.innerHeight;
+    let top = r.bottom + 4;
+    if (top + h > viewH - 8) top = Math.max(8, r.top - h - 4);
+    slash.menu.style.top = `${top}px`;
+    slash.menu.style.left = `${Math.max(8, Math.min(r.left, window.innerWidth - 248))}px`;
+  }
+  function closeSlash() { if (slash) { slash.menu.remove(); slash = null; } }
+  function chooseSlash() {
+    if (!slash) return;
+    const { blockId, items, index } = slash;
+    const it = items[index];
+    closeSlash();
+    const b = find(blockId); if (!b) return;
+    b.text = '';
+    const t = textOf(blockId); if (t) t.textContent = '';
+    setType(blockId, it.type);
+    save();
+  }
+  function handleSlashKey(e) {
+    if (e.key === 'ArrowDown') { e.preventDefault(); slash.index = (slash.index + 1) % slash.items.length; drawSlash(); return true; }
+    if (e.key === 'ArrowUp') { e.preventDefault(); slash.index = (slash.index - 1 + slash.items.length) % slash.items.length; drawSlash(); return true; }
+    if (e.key === 'Enter' || e.key === 'Tab') { e.preventDefault(); chooseSlash(); return true; }
+    if (e.key === 'Escape') { e.preventDefault(); slashDismissed = slash.blockId; closeSlash(); return true; }
+    return false;
+  }
+
+  // ---------- 이벤트 ----------
+  function onInput(e) {
+    if (readOnly) return;
+    const t = e.target.closest && e.target.closest('.text'); if (!t) return;
+    const id = t.closest('.block').dataset.id;
+    const b = find(id); if (!b) return;
+    if (t.textContent === '' && t.firstChild) t.textContent = '';
+    const text = clean(t.textContent);
+    b.text = text;
+    if (!e.isComposing && b.type === 'p' && applyShortcut(b, text)) return;
+    if (!text.startsWith('/')) slashDismissed = null;
+    if (/^\/[^\s/]{0,12}$/.test(text)) openOrUpdateSlash(b, text.slice(1));
+    else if (slash && slash.blockId === id) closeSlash();
+    save();
+  }
+
+  function onBeforeInput(e) {
+    if (readOnly) { e.preventDefault(); return; }
+    const t = e.target.closest && e.target.closest('.text'); if (!t) return;
+    const id = t.closest('.block').dataset.id;
+    if (e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak') {
+      e.preventDefault();
+      if (slash) { chooseSlash(); return; }
+      splitAt(id);
+    } else if (e.inputType === 'deleteContentBackward') {
+      if (collapsed() && caretOffset(t) === 0 && backspaceAtStart(id)) e.preventDefault();
+    } else if (e.inputType.startsWith('format')) {
+      e.preventDefault();
+    }
+  }
+
+  function onKeyDown(e) {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (slash && handleSlashKey(e)) return;
+    if (readOnly) return;
+    const row = e.target.closest && e.target.closest('.block'); if (!row) return;
+    const id = row.dataset.id; const i = idx(id); const b = blocks()[i]; if (!b) return;
+
+    if (!TEXT_TYPES.has(b.type)) {
+      if (e.target !== row) return;
+      if (e.key === 'Backspace' || e.key === 'Delete') {
+        e.preventDefault();
+        const prev = blocks()[i - 1];
+        removeBlock(id);
+        focusBlock((prev || blocks()[0]).id, prev ? 'end' : 'start'); save();
+      } else if (e.key === 'Enter') {
+        e.preventDefault(); const nb = insertAfter(id, newBlock()); focusBlock(nb.id, 'start'); save();
+      } else if (e.key === 'ArrowUp' && i > 0) { e.preventDefault(); focusBlock(blocks()[i - 1].id, 'end'); }
+      else if (e.key === 'ArrowDown' && i < blocks().length - 1) { e.preventDefault(); focusBlock(blocks()[i + 1].id, 'start'); }
+      return;
+    }
+
+    const t = row.querySelector('.text');
+    const len = t.textContent.length;
+    const off = caretOffset(t);
+    const coll = collapsed();
+    const mod = e.metaKey || e.ctrlKey;
+
+    if (mod && ['b', 'i', 'u'].includes(e.key.toLowerCase())) { e.preventDefault(); return; }
+    if (e.key === 'Enter' && mod && b.type === 'todo') {
+      e.preventDefault(); b.checked = !b.checked; replaceRow(b); focusBlock(id, off); save(); return;
+    }
+    if (e.key === 'Backspace' && coll && off === 0) { if (backspaceAtStart(id)) e.preventDefault(); return; }
+    if (e.key === 'Delete' && coll && off === len) {
+      const next = blocks()[i + 1]; if (!next) return;
+      e.preventDefault();
+      if (!TEXT_TYPES.has(next.type)) { removeBlock(next.id); save(); return; }
+      b.text = clean(t.textContent) + (next.text || ''); t.textContent = b.text;
+      removeBlock(next.id); focusBlock(id, len); save();
+      return;
+    }
+    if (e.key === 'ArrowUp' && coll && off === 0 && i > 0) { e.preventDefault(); focusBlock(blocks()[i - 1].id, 'end'); return; }
+    if (e.key === 'ArrowDown' && coll && off === len && i < blocks().length - 1) { e.preventDefault(); focusBlock(blocks()[i + 1].id, 'start'); }
+  }
+
+  function onPaste(e) {
+    if (readOnly) return;
+    const t = e.target.closest && e.target.closest('.text'); if (!t) return;
+    const id = t.closest('.block').dataset.id;
+    const items = [...((e.clipboardData && e.clipboardData.items) || [])];
+    const img = items.find((it) => it.kind === 'file' && it.type.startsWith('image/'));
+    e.preventDefault();
+    if (img) { insertImageFile(id, img.getAsFile()); return; }
+    const text = clean((e.clipboardData.getData('text/plain') || '').replace(/\r\n?/g, '\n'));
+    if (!text) return;
+    const lines = text.split('\n');
+    if (lines.length === 1) {
+      if (!document.execCommand('insertText', false, text)) {
+        const off = caretOffset(t); const cur = t.textContent;
+        t.textContent = cur.slice(0, off) + text + cur.slice(off);
+        setCaret(t, off + text.length);
+        t.dispatchEvent(new Event('input', { bubbles: true }));
+      }
+      return;
+    }
+    const b = find(id);
+    const cur = clean(t.textContent); const off = caretOffset(t);
+    const after = cur.slice(off);
+    b.text = cur.slice(0, off) + lines[0]; t.textContent = b.text;
+    let lastId = id;
+    for (const line of lines.slice(1)) {
+      if (!line.trim()) continue;
+      let nb = null;
+      for (const [re, type] of SHORTCUTS) {
+        const m = line.match(re);
+        if (m) { nb = newBlock(type, line.slice(m[0].length)); if (type === 'todo') nb.checked = /x/i.test(m[0]); break; }
+      }
+      if (!nb) nb = newBlock(line.startsWith('### ') || line.startsWith('## ') ? 'h2' : 'p', line.replace(/^#{2,3}\s/, ''));
+      lastId = insertAfter(lastId, nb).id;
+    }
+    const last = find(lastId);
+    const endLen = (last.text || '').length;
+    last.text = (last.text || '') + after;
+    textOf(lastId).textContent = last.text;
+    focusBlock(lastId, endLen); save();
+  }
+
+  blocksEl.addEventListener('input', onInput);
+  blocksEl.addEventListener('compositionend', onInput);
+  blocksEl.addEventListener('beforeinput', onBeforeInput);
+  blocksEl.addEventListener('keydown', onKeyDown);
+  blocksEl.addEventListener('paste', onPaste);
+  blocksEl.addEventListener('drop', (e) => {
+    const f = [...((e.dataTransfer && e.dataTransfer.files) || [])].find((x) => x.type.startsWith('image/'));
+    const row = e.target.closest && e.target.closest('.block');
+    if (f && row && !readOnly) { e.preventDefault(); insertImageFile(row.dataset.id, f); }
+  });
+  blocksEl.addEventListener('focusin', (e) => {
+    const row = e.target.closest('.block');
+    if (row) { activeId = row.dataset.id; updateToolbar(); }
+  });
+  blocksEl.addEventListener('focusout', () => {
+    setTimeout(() => {
+      if (slash && !rowOf(slash.blockId)?.contains(document.activeElement)) closeSlash();
+    }, 120);
+  });
+  blocksEl.closest('.editor-wrap')?.addEventListener('scroll', () => positionSlash(), { passive: true });
+
+  titleEl.addEventListener('input', () => { if (!note || readOnly) return; note.title = titleEl.value; save(); });
+  titleEl.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter' || e.key === 'ArrowDown') {
+      e.preventDefault();
+      const first = blocks()[0]; if (first) focusBlock(first.id, 'start');
+    }
+  });
+
+  // ---------- 도구 막대 ----------
+  function buildToolbar() {
+    toolbarEl.textContent = '';
+    const keep = (btn) => {
+      btn.addEventListener('pointerdown', (e) => e.preventDefault());
+      btn.addEventListener('mousedown', (e) => e.preventDefault());
+      return btn;
+    };
+    for (const [type, label] of TOOLBAR) {
+      toolbarEl.append(keep(el('button', {
+        type: 'button', 'data-type': type,
+        onclick: () => {
+          if (!note || readOnly) return;
+          const target = activeId && idx(activeId) >= 0 ? activeId : blocks()[blocks().length - 1]?.id;
+          if (target) setType(target, type, true);
+        },
+      }, label)));
+    }
+    toolbarEl.append(el('span', { class: 'tb-spacer' }),
+      keep(el('button', { type: 'button', class: 'tb-done', onclick: () => document.activeElement && document.activeElement.blur() }, '완료')));
+  }
+  function updateToolbar() {
+    const b = activeId ? find(activeId) : null;
+    toolbarEl.querySelectorAll('[data-type]').forEach((btn) => {
+      btn.classList.toggle('on', !!b && b.type !== 'p' && b.type === btn.dataset.type);
+    });
+  }
+  buildToolbar();
+
+  // ---------- 외부 API ----------
+  return {
+    open(n, opts = {}) {
+      note = n; readOnly = !!opts.readOnly; activeId = null; closeSlash();
+      if (!Array.isArray(note.blocks) || !note.blocks.length) note.blocks = [newBlock()];
+      titleEl.value = note.title || '';
+      titleEl.readOnly = readOnly;
+      render(); updateToolbar();
+    },
+    close() { note = null; activeId = null; closeSlash(); blocksEl.textContent = ''; titleEl.value = ''; },
+    currentId: () => (note ? note.id : null),
+    isFocused() {
+      const a = document.activeElement;
+      return !!note && (a === titleEl || blocksEl.contains(a));
+    },
+    refreshIfIdle() {
+      if (!note) return;
+      const a = document.activeElement;
+      if (a === titleEl || blocksEl.contains(a)) return;
+      if (!Array.isArray(note.blocks) || !note.blocks.length) note.blocks = [newBlock()];
+      titleEl.value = note.title || '';
+      render();
+    },
+    focusEnd() {
+      if (!note || readOnly) return;
+      const last = blocks()[blocks().length - 1];
+      if (last && TEXT_TYPES.has(last.type)) focusBlock(last.id, 'end');
+      else { const nb = newBlock(); blocks().push(nb); blocksEl.append(renderBlock(nb)); focusBlock(nb.id, 'start'); save(); }
+    },
+  };
+}
