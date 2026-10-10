@@ -277,7 +277,8 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
       row.tabIndex = 0;
       let host = '';
       try { host = new URL(b.url).hostname.replace(/^www\./, ''); } catch { host = ''; }
-      row.append(el('a', { class: 'link-card', href: b.url || '#', target: '_blank', rel: 'noopener noreferrer' },
+      const safeUrl = /^https?:\/\//i.test(b.url || '') ? b.url : '#';
+      row.append(el('a', { class: 'link-card', href: safeUrl, target: '_blank', rel: 'noopener noreferrer' },
         el('span', { class: 'link-ico', 'aria-hidden': 'true' }, '🔗'),
         el('span', { class: 'link-text' }, el('span', { class: 'link-host' }, host || '링크'), el('span', { class: 'link-url' }, b.url || ''))));
       return row;
@@ -366,6 +367,15 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
       if (!cur) return false;
       b.indent = cur - 1;
     }
+    // 접힌 토글 안으로 들어가면 토글을 펼쳐서 쓰던 줄이 사라지지 않게 한다
+    let level = b.indent || 0;
+    for (let j = i - 1; j >= 0 && level > 0; j -= 1) {
+      const a = blocks()[j]; const ai = a.indent || 0;
+      if (ai < level) {
+        if (a.type === 'toggle' && a.open === false) { a.open = true; replaceRow(a); }
+        level = ai;
+      }
+    }
     const t = textOf(id);
     const off = t && document.activeElement === t ? caretOffset(t) : 'end';
     replaceRow(b); focusBlock(id, off); save();
@@ -400,6 +410,7 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
   }
   function removeBlock(id) {
     const i = idx(id); if (i < 0) return;
+    flushHistory();
     blocks().splice(i, 1);
     rowOf(id)?.remove();
     renumber();
@@ -621,8 +632,17 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
     const i = idx(id); const b = blocks()[i]; if (!b) return false;
     if (b.type !== 'p') { b.type = 'p'; delete b.checked; delete b.open; replaceRow(b); focusBlock(id, 0); save(); return true; }
     if (b.indent) { b.indent -= 1; replaceRow(b); focusBlock(id, 0); save(); return true; }
-    const prev = blocks()[i - 1]; if (!prev) return false;
-    if (!TEXT_TYPES.has(prev.type)) { removeBlock(prev.id); save(); return true; }
+    // 위쪽에서 화면에 보이는 블록 (접힌 토글 안의 숨은 줄은 건너뛴다)
+    let pi = i - 1;
+    while (pi >= 0 && rowOf(blocks()[pi].id)?.hidden) pi -= 1;
+    const prev = blocks()[pi]; if (!prev) return false;
+    if (!TEXT_TYPES.has(prev.type)) {
+      // 표·사진·구분선은 지우지 않는다. 빈 줄이면 그 줄만 없애고 위 블록을 선택한다
+      if (!(b.text || '').trim()) { flushHistory(); removeBlock(id); save(); }
+      focusBlock(prev.id, 'end');
+      return true;
+    }
+    flushHistory();
     const plen = (prev.text || '').length;
     const merged = htmlOf(prev) + htmlOf(b);
     prev.text = (prev.text || '') + (b.text || '');
@@ -737,6 +757,12 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
     save();
   }
 
+  let composing = false; let pendingSplit = null;
+  blocksEl.addEventListener('compositionstart', () => { composing = true; });
+  blocksEl.addEventListener('compositionend', () => {
+    composing = false;
+    if (pendingSplit) { const pid = pendingSplit; pendingSplit = null; setTimeout(() => { if (slash) chooseSlash(); else splitAt(pid); }, 0); }
+  });
   function onBeforeInput(e) {
     if (readOnly) { e.preventDefault(); return; }
     if (e.inputType === 'historyUndo') { e.preventDefault(); undo(); return; }
@@ -745,6 +771,7 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
     const id = t.closest('.block').dataset.id;
     if (e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak') {
       e.preventDefault();
+      if (composing || e.isComposing) { pendingSplit = id; return; }
       if (slash) { chooseSlash(); return; }
       splitAt(id);
     } else if (e.inputType === 'deleteContentBackward') {

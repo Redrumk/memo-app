@@ -85,6 +85,10 @@ function idbPut(key, value) {
     tx.oncomplete = () => resolve(); tx.onerror = () => reject(tx.error); tx.onabort = () => reject(tx.error);
   });
 }
+const BACKUP_KEY = 'memo.unsaved.v1';
+function readBackup() {
+  try { const raw = localStorage.getItem(BACKUP_KEY); return raw ? JSON.parse(raw) : null; } catch { return null; }
+}
 function readLocal() {
   try { const raw = localStorage.getItem(KEY); return raw ? JSON.parse(raw) : null; } catch { return null; }
 }
@@ -112,6 +116,9 @@ export async function init() {
     db = null; storageKind = 'local';
     data = readLocal();
   }
+  // 앱을 닫는 순간 비상 저장해 둔 것이 더 최신이면 그걸 쓴다
+  const bk = readBackup();
+  if (bk && (!data || ((bk.meta && bk.meta.savedAt) || '') > ((data.meta && data.meta.savedAt) || ''))) data = bk;
   state = data ? normalize(data) : seed();
   if (!state.meta.demo2) {
     const f = state.folders.find((x) => !x.deleted);
@@ -119,18 +126,24 @@ export async function init() {
     state.meta.demo2 = true;
   }
   flush();
+  try { localStorage.removeItem(BACKUP_KEY); } catch { /* 무시 */ }
   try { if (navigator.storage && navigator.storage.persist) navigator.storage.persist(); } catch { /* 지원 안 함 */ }
 }
 const listeners = new Set();
 let saveTimer = null;
 let lockFn = () => null;
 
+let writing = 0;
 export function flush() {
   clearTimeout(saveTimer); saveTimer = null;
+  state.meta.savedAt = now();
   const json = JSON.stringify(state);
   if (db) {
-    idbPut('data', JSON.parse(json)).catch((e) => { console.error(e); listeners.forEach((fn) => fn('save-error')); });
-    return;
+    writing += 1;
+    idbPut('data', JSON.parse(json))
+      .catch((e) => { console.error(e); listeners.forEach((fn) => fn('save-error')); })
+      .finally(() => { writing -= 1; });
+    return json;
   }
   try { localStorage.setItem(KEY, json); }
   catch (e) { console.error(e); listeners.forEach((fn) => fn('save-error')); }
@@ -142,8 +155,14 @@ export function subscribe(fn) { listeners.add(fn); return () => listeners.delete
 export function setLock(fn) { lockFn = fn; }
 
 if (typeof document !== 'undefined') {
-  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden' && saveTimer) flush(); });
-  window.addEventListener('pagehide', () => { if (saveTimer) flush(); });
+  // 앱을 닫거나 다른 앱으로 넘어갈 때: 비동기 저장이 끝나기 전에 꺼질 수 있어 즉시 쓰는 비상 사본도 남긴다
+  const emergency = () => {
+    if (!saveTimer && !writing) return;
+    const json = flush() || JSON.stringify(state);
+    try { localStorage.setItem(BACKUP_KEY, json); } catch { /* 용량 초과 시 포기 */ }
+  };
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'hidden') emergency(); });
+  window.addEventListener('pagehide', emergency);
 }
 
 // ---------- 조회 ----------
@@ -187,8 +206,8 @@ function descendants(id) {
   return out;
 }
 export function isEmptyNote(n) {
-  return !(n.title || '').trim() && !n.icon && !childPages(n.id).length
-    && !(n.blocks || []).some((b) => (b.text || '').trim() || b.type === 'image' || b.type === 'divider');
+  return !(n.title || '').trim() && !n.icon && !n.cover && !childPages(n.id).length
+    && !(n.blocks || []).some((b) => b.type !== 'p' || (b.text || '').trim());
 }
 // folderId: 'all' | 'trash' | 폴더 id
 export function listNotes(folderId, query = '') {
@@ -247,7 +266,7 @@ export function duplicateNote(id) {
   const n = {
     ...strip(src), id: uid(), title: src.title ? `${src.title} 사본` : '', pinned: false, deleted: false,
     owner_id: undefined, created_at: t, updated_at: t, dirty: true, synced: false,
-    blocks: (src.blocks || []).map((b) => ({ ...b, id: uid() })),
+    blocks: JSON.parse(JSON.stringify(src.blocks || [])).map((b) => ({ ...b, id: uid() })),
   };
   state.notes.push(n);
   commit('data');

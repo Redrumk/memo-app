@@ -243,7 +243,7 @@ svg { display: block; }
   .note-title { font-size: 27px; }
   .toolbar {
     position: fixed; left: 0; right: 0; bottom: var(--kb); z-index: 30;
-    padding-bottom: max(6px, env(safe-area-inset-bottom));
+    padding-bottom: max(6px, calc(env(safe-area-inset-bottom) - var(--kb)));
   }
   .toolbar .tb-done { display: inline-block; }
   .toast { bottom: calc(96px + env(safe-area-inset-bottom)); }
