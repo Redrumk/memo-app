@@ -98,7 +98,42 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
   const find = (id) => blocks()[idx(id)];
   const rowOf = (id) => blocksEl.querySelector(`.block[data-id="${CSS.escape(id)}"]`);
   const textOf = (id) => rowOf(id)?.querySelector('.text');
-  const save = () => { if (note && !readOnly) onChange(note); };
+  // 되돌리기: 편집이 0.6초 멈출 때마다 페이지 상태를 기록
+  let history = []; let hIndex = -1; let histTimer = null; let restoring = false;
+  const snap = () => JSON.stringify({ t: note.title || '', b: note.blocks });
+  function resetHistory() { clearTimeout(histTimer); histTimer = null; history = note ? [snap()] : []; hIndex = history.length - 1; }
+  function pushSnap() {
+    const s = snap();
+    if (s === history[hIndex]) return;
+    history = history.slice(0, hIndex + 1); history.push(s);
+    if (history.length > 100) history.shift();
+    hIndex = history.length - 1;
+  }
+  function recordHistory() {
+    if (!note || restoring) return;
+    clearTimeout(histTimer);
+    histTimer = setTimeout(() => { histTimer = null; if (note) pushSnap(); }, 600);
+  }
+  function flushHistory() { if (histTimer) { clearTimeout(histTimer); histTimer = null; pushSnap(); } }
+  function applySnap(s) {
+    const d = JSON.parse(s);
+    restoring = true;
+    note.title = d.t; note.blocks = d.b; titleEl.value = note.title;
+    render(); onChange(note);
+    restoring = false;
+    if (activeId && idx(activeId) >= 0) focusBlock(activeId, 'end');
+  }
+  function undo() {
+    if (!note || readOnly) return;
+    flushHistory();
+    if (hIndex <= 0) { toast('더 되돌릴 내용이 없습니다'); return; }
+    hIndex -= 1; applySnap(history[hIndex]);
+  }
+  function redo() {
+    if (!note || readOnly || hIndex >= history.length - 1) return;
+    hIndex += 1; applySnap(history[hIndex]);
+  }
+  const save = () => { if (note && !readOnly) { onChange(note); recordHistory(); } };
 
   // ---------- 렌더링 ----------
   function renderBlock(b) {
@@ -156,14 +191,44 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
         if (c < 0) { c = cols - 1; r -= 1; }
         if (r >= 0) go(r, c);
       });
-      row.append(el('div', { class: 'table-wrap' }, table));
+      if (b.view === 'cards') {
+        const heads = b.rows[0];
+        const cards = el('div', { class: 'cards' });
+        b.rows.slice(1).filter((r) => r.some((x) => x)).forEach((r) => {
+          cards.append(el('button', { type: 'button', class: 'card', onclick: () => { if (readOnly) return; b.view = 'table'; replaceRow(b); save(); } },
+            el('strong', {}, r[0] || '제목 없음'),
+            ...r.slice(1).map((v, i) => (v ? el('span', { class: 'card-field' }, el('small', {}, heads[i + 1] || ''), v) : null))));
+        });
+        if (!cards.children.length) cards.append(el('div', { class: 'card-empty' }, '표에 내용을 채우면 카드로 보입니다'));
+        row.append(cards);
+      } else row.append(el('div', { class: 'table-wrap' }, table));
+      const sortRows = async () => {
+        const col = await actionSheet('정렬할 열', b.rows[0].map((h, i) => ({ label: h || `${i + 1}번째 열`, value: String(i) })));
+        if (col == null) return;
+        const dir = await actionSheet('순서', [{ label: '오름차순 (ㄱ→ㅎ, 1→9)', value: 'asc' }, { label: '내림차순 (ㅎ→ㄱ, 9→1)', value: 'desc' }]);
+        if (!dir) return;
+        const c = +col;
+        const body = b.rows.slice(1);
+        body.sort((x, y) => {
+          const a = x[c] || ''; const z = y[c] || '';
+          if (!a && z) return 1;
+          if (a && !z) return -1;
+          const na = parseFloat(a); const nz = parseFloat(z);
+          const r = !Number.isNaN(na) && !Number.isNaN(nz) ? na - nz : a.localeCompare(z, 'ko', { numeric: true });
+          return dir === 'asc' ? r : -r;
+        });
+        b.rows = [b.rows[0], ...body];
+        replaceRow(b); save();
+      };
       if (!readOnly) {
         const act = (label, fn) => { const bt = el('button', { type: 'button' }, label); bt.addEventListener('mousedown', (e) => e.preventDefault()); bt.addEventListener('click', fn); return bt; };
         row.append(el('div', { class: 'tbl-actions' },
           act('+ 행', () => { b.rows.push(new Array(b.rows[0].length).fill('')); replaceRow(b); focusCell(b.id, b.rows.length - 1, 0); save(); }),
           act('+ 열', () => { b.rows.forEach((r) => r.push('')); replaceRow(b); focusCell(b.id, 0, b.rows[0].length - 1); save(); }),
           act('− 행', () => { if (b.rows.length > 1) { b.rows.pop(); replaceRow(b); save(); } }),
-          act('− 열', () => { if (b.rows[0].length > 1) { b.rows.forEach((r) => r.pop()); replaceRow(b); save(); } })));
+          act('− 열', () => { if (b.rows[0].length > 1) { b.rows.forEach((r) => r.pop()); replaceRow(b); save(); } }),
+          act('정렬', sortRows),
+          act(b.view === 'cards' ? '표로 보기' : '카드로 보기', () => { b.view = b.view === 'cards' ? 'table' : 'cards'; replaceRow(b); save(); })));
       }
       return row;
     }
@@ -608,6 +673,8 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
 
   function onBeforeInput(e) {
     if (readOnly) { e.preventDefault(); return; }
+    if (e.inputType === 'historyUndo') { e.preventDefault(); undo(); return; }
+    if (e.inputType === 'historyRedo') { e.preventDefault(); redo(); return; }
     const t = e.target.closest && e.target.closest('.text'); if (!t) return;
     const id = t.closest('.block').dataset.id;
     if (e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak') {
@@ -737,6 +804,14 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
   blocksEl.closest('.editor-wrap')?.addEventListener('scroll', () => positionSlash(), { passive: true });
 
   titleEl.addEventListener('input', () => { if (!note || readOnly) return; note.title = titleEl.value; save(); });
+  const editorRoot = blocksEl.closest('.editor') || blocksEl;
+  editorRoot.addEventListener('keydown', (e) => {
+    const mod = e.metaKey || e.ctrlKey;
+    if (!mod || e.isComposing) return;
+    const k = e.key.toLowerCase();
+    if (k === 'z') { e.preventDefault(); e.stopPropagation(); if (e.shiftKey) redo(); else undo(); }
+    else if (k === 'y') { e.preventDefault(); e.stopPropagation(); redo(); }
+  }, true);
   titleEl.addEventListener('keydown', (e) => {
     if (e.isComposing || e.keyCode === 229) return;
     if (e.key === 'Enter' || e.key === 'ArrowDown') {
@@ -753,6 +828,7 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
       btn.addEventListener('mousedown', (e) => e.preventDefault());
       return btn;
     };
+    toolbarEl.append(keep(el('button', { type: 'button', class: 'tb-move', 'aria-label': '되돌리기', title: '되돌리기 (Cmd/Ctrl+Z)', onclick: () => undo() }, '↶')));
     for (const [type, label] of TOOLBAR) {
       toolbarEl.append(keep(el('button', {
         type: 'button', 'data-type': type,
@@ -797,8 +873,9 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
       if (!Array.isArray(note.blocks) || !note.blocks.length) note.blocks = [newBlock()];
       titleEl.value = note.title || '';
       titleEl.readOnly = readOnly;
-      render(); updateToolbar();
+      render(); updateToolbar(); resetHistory();
     },
+    undo, redo,
     close() { note = null; activeId = null; closeSlash(); blocksEl.textContent = ''; titleEl.value = ''; },
     currentId: () => (note ? note.id : null),
     refreshPageLinks() {
@@ -822,6 +899,11 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
       if (!Array.isArray(note.blocks) || !note.blocks.length) note.blocks = [newBlock()];
       titleEl.value = note.title || '';
       render();
+    },
+    focusFirst() {
+      if (!note || readOnly) return;
+      const b = blocks().find((x) => TEXT_TYPES.has(x.type) && !(x.text || '').trim()) || blocks().find((x) => TEXT_TYPES.has(x.type));
+      if (b) focusBlock(b.id, 'end');
     },
     focusEnd() {
       if (!note || readOnly) return;

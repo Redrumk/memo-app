@@ -391,3 +391,17 @@ button.crumb:hover { background: var(--bg-hover); color: var(--text); }
 .tbl-actions button:hover { background: var(--bg-hover); color: var(--text-2); }
 @media (hover: none) { .tbl-actions { opacity: 1; } }
 @media (max-width: 759px) { .block { margin-left: calc(var(--indent, 0) * 20px); } }
+
+/* ---------- table cards / templates ---------- */
+.cards { display: grid; grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 8px; }
+.card { display: flex; flex-direction: column; gap: 4px; text-align: left; padding: 12px; border: 1px solid var(--line); border-radius: 8px; background: var(--bg); min-width: 0; }
+.card:hover { background: var(--bg-hover); }
+.card strong { font-size: 15px; overflow-wrap: anywhere; }
+.card-field { display: flex; flex-direction: column; font-size: 14px; overflow-wrap: anywhere; }
+.card-field small { font-size: 11px; color: var(--text-3); }
+.card-empty { color: var(--text-3); font-size: 14px; padding: 8px 2px; }
+.templates { margin-top: 20px; display: flex; flex-direction: column; gap: 2px; }
+.templates-label { font-size: 13px; color: var(--text-3); padding: 0 6px 6px; }
+.tpl-btn { display: flex; align-items: center; gap: 10px; width: 100%; padding: 7px 6px; border-radius: 6px; text-align: left; font-size: 15px; color: var(--text-2); }
+.tpl-btn:hover { background: var(--bg-hover); color: var(--text); }
+.tpl-ico { width: 22px; text-align: center; font-size: 17px; }

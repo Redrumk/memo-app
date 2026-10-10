@@ -22,6 +22,23 @@ const EMOJIS = ['📄', '📝', '📌', '📚', '💡', '✅', '🗂️', '📅'
   '🏕️', '🎮', '🎨', '🎬', '🎵', '📷', '✈️', '🏠', '💼', '💰', '📈', '🧠', '🛒', '🍳', '☕', '🍺',
   '🐶', '🐱', '⚽', '🏃', '🧘', '💬', '🔒', '🔧', '🧪', '📦', '🗺️', '🎁', '🧩', '🪴', '🌊', '👋'];
 
+// 빈 페이지에서 고르는 템플릿
+const B = (type, text = '', extra = {}) => ({ ...store.newBlock(type, text), ...extra });
+const TEMPLATES = [
+  { icon: '✅', name: '할 일 목록', blocks: () => [B('todo', '', { checked: false }), B('todo', '', { checked: false }), B('todo', '', { checked: false })] },
+  { icon: '🗓️', name: '회의록', blocks: () => [
+    B('callout', `${new Date().toLocaleDateString('ko-KR', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'short' })}`, { icon: '📅' }),
+    B('h2', '참석자'), B('bullet'), B('h2', '안건'), B('number'), B('h2', '결정 사항'), B('bullet'), B('h2', '할 일'), B('todo', '', { checked: false })] },
+  { icon: '📔', name: '일기', title: () => `${new Date().toLocaleDateString('ko-KR', { month: 'long', day: 'numeric', weekday: 'short' })} 일기`, blocks: () => [
+    B('callout', '오늘 기분 한 줄', { icon: '🌤️' }), B('h2', '오늘 한 일'), B('bullet'), B('h2', '좋았던 것'), B('bullet'), B('h2', '내일 할 일'), B('todo', '', { checked: false })] },
+  { icon: '🧩', name: '기획서', blocks: () => [
+    B('callout', '한 문장으로 요약', { icon: '🎯' }), B('h2', '배경'), B('p'), B('h2', '목표'), B('bullet'), B('h2', '세부 내용'),
+    B('toggle', '아이디어 메모'), B('p', '', { indent: 1 }), B('h2', '일정'),
+    B('table', '', { rows: [['단계', '기간', '담당'], ['', '', ''], ['', '', '']] }), B('h2', '할 일'), B('todo', '', { checked: false })] },
+  { icon: '📚', name: '독서 기록', blocks: () => [
+    B('table', '', { rows: [['제목', '저자', '평점', '다 읽은 날'], ['', '', '', '']] }), B('h2', '인상 깊은 문장'), B('quote'), B('h2', '생각'), B('p')] },
+];
+
 function readUI() {
   try { return JSON.parse(localStorage.getItem(UI_KEY)) || {}; } catch { return {}; }
 }
@@ -150,7 +167,34 @@ function renderHeader() {
   $('#btn-add-cover').hidden = !!n.cover || !!n.deleted;
   $('#editor').classList.toggle('has-icon', !!n.icon);
   const chars = store.noteText(n).replace(/\s/g, '').length;
+  renderTemplates(n);
   $('#note-meta').textContent = [`수정 ${formatFull(n.updated_at)}`, f?.shared ? '공유 섹션' : null, `${chars.toLocaleString('ko-KR')}자`].filter(Boolean).join(' · ');
+}
+
+function renderTemplates(n) {
+  const box = $('#templates');
+  const blocks = (n && n.blocks) || [];
+  const blank = n && !n.deleted && blocks.length <= 1 && (!blocks[0] || (blocks[0].type === 'p' && !(blocks[0].text || '').trim()));
+  box.hidden = !blank;
+  if (!blank || box.dataset.for === n.id) return;
+  box.dataset.for = n.id;
+  box.textContent = '';
+  box.append(el('div', { class: 'templates-label' }, '빈 페이지로 시작하거나 템플릿을 고르세요'));
+  for (const t of TEMPLATES) {
+    box.append(el('button', {
+      type: 'button', class: 'tpl-btn',
+      onclick: () => {
+        const cur = store.getNote(n.id); if (!cur) return;
+        const patch = { blocks: t.blocks() };
+        if (!cur.icon) patch.icon = t.icon;
+        if (!(cur.title || '').trim() && t.title) patch.title = t.title();
+        store.updateNote(n.id, patch);
+        editor.open(store.getNote(n.id));
+        renderHeader();
+        editor.focusFirst();
+      },
+    }, el('span', { class: 'tpl-ico' }, t.icon), t.name));
+  }
 }
 
 function showEditor(n) {
@@ -160,7 +204,7 @@ function showEditor(n) {
   $('#btn-note-menu').hidden = !on;
   $('#toolbar').hidden = !on || !!n.deleted;
   $('#trash-banner').hidden = !(n && n.deleted);
-  if (!on) { $('#cover').hidden = true; $('#crumbs').textContent = ''; }
+  if (!on) { $('#cover').hidden = true; $('#crumbs').textContent = ''; $('#templates').hidden = true; }
 }
 
 function renderAll() {
