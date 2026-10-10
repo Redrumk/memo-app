@@ -509,3 +509,18 @@ body:has(.overlay) .toast { bottom: auto; top: calc(16px + env(safe-area-inset-t
 .icon-btn:focus:not(:focus-visible), .mini:focus:not(:focus-visible), .tb-btn:focus:not(:focus-visible) { background: none; }
 :focus-visible { outline: 2px solid var(--check); outline-offset: 1px; }
 .block .text:focus-visible, .note-title:focus-visible, #search:focus-visible, .tbl th:focus-visible, .tbl td:focus-visible, .form input:focus-visible { outline: none; }
+
+/* 디자인 2차 점검 반영 */
+.sheet { max-height: 70vh; }
+.sec-more { display: none; }
+@media (hover: none) {
+  .section-head .tree-actions .mini:first-child { display: none; }
+  .sec-more { display: grid; place-items: center; width: 36px; height: 44px; color: var(--text-3); font-size: 12px; flex: none; }
+  .section-head .section-name { flex: 0 1 auto; }
+  .section-head .tree-actions { margin-left: auto; }
+}
+@media (max-width: 759px) {
+  .tree-label { align-self: stretch; min-height: 44px; }
+  .side-foot .text-btn { min-height: 44px; padding: 0 12px; }
+}
+body:has(.overlay) .toast { top: calc(72px + env(safe-area-inset-top)); }

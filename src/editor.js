@@ -1007,7 +1007,7 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
   async function addBlockMenu() {
     if (!note || readOnly) return;
     const at = target(); if (!at) return;
-    const t = await actionSheet('블록 추가', BLOCK_TYPES.map((x) => ({ label: `${x.icon}   ${x.label}`, value: x.type })));
+    const t = await actionSheet('블록 추가', BLOCK_TYPES.map((x) => ({ label: x.label, value: x.type })));
     if (!t || !find(at)) return;
     const cur = find(at);
     const id = cur.type === 'p' && !(cur.text || '').trim() ? at : insertAfter(at, newBlock()).id;
@@ -1017,7 +1017,7 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
   async function turnMenu() {
     if (!note || readOnly) return;
     const at = target(); if (!at) return;
-    const t = await actionSheet('형식 바꾸기', BLOCK_TYPES.filter((x) => TEXT_TYPES.has(x.type)).map((x) => ({ label: `${x.icon}   ${x.label}`, value: x.type })));
+    const t = await actionSheet('형식 바꾸기', BLOCK_TYPES.filter((x) => TEXT_TYPES.has(x.type)).map((x) => ({ label: x.label, value: x.type })));
     if (t && find(at)) setType(at, t);
   }
   function buildToolbar() {

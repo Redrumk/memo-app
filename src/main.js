@@ -140,6 +140,7 @@ function renderTree() {
         class: 'section-name', type: 'button', 'aria-expanded': String(!closed),
         onclick: () => { if (closed) collapsedSections.delete(f.id); else collapsedSections.add(f.id); saveUI(); renderTree(); },
       }, f.name, f.shared || f.linked ? el('span', { class: 'shared-tag' }, '공유') : null),
+      el('button', { class: 'sec-more', type: 'button', 'aria-label': `${f.name} 섹션 메뉴`, onclick: () => folderMenu(f.id) }, '▾'),
       el('span', { class: 'tree-actions' },
         el('button', { class: 'mini', type: 'button', 'aria-label': '섹션 메뉴', title: '섹션 메뉴', onclick: () => folderMenu(f.id) }, '⋯'),
         el('button', { class: 'mini', type: 'button', 'aria-label': '페이지 추가', title: '페이지 추가', onclick: () => newPage(f.id, null) }, '+'))));
