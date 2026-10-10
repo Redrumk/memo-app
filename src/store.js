@@ -41,7 +41,8 @@ function addDemo(folderId) {
     newBlock('h2', '줄 맨 앞 단축 입력'),
     newBlock('bullet', '# 제목, ## 소제목'),
     newBlock('bullet', '- 목록, 1. 번호 목록, [] 체크박스'),
-    newBlock('bullet', '> 인용, --- 구분선'),
+    newBlock('bullet', '> 토글, " 인용, --- 구분선'),
+    newBlock('bullet', 'Tab 들여쓰기, Shift+Tab 내어쓰기'),
     newBlock('h2', '블록 다루기'),
     newBlock('number', '컴퓨터: 블록 왼쪽 ⋮⋮ 를 끌면 순서 변경, 누르면 메뉴'),
     newBlock('number', '아이폰: 아래 도구 막대의 ↑ ↓ 와 ⋯'),
@@ -98,7 +99,9 @@ export const getNote = (id) => state.notes.find((n) => n.id === id);
 export function listFolders() {
   return state.folders.filter((f) => !f.deleted).sort((a, b) => a.name.localeCompare(b.name, 'ko'));
 }
-export function noteText(n) { return (n.blocks || []).map((b) => b.text || '').join('\n'); }
+export function noteText(n) {
+  return (n.blocks || []).map((b) => (b.rows ? b.rows.flat().join(' ') : b.text || '')).join('\n');
+}
 export function preview(n) {
   const b = (n.blocks || []).find((x) => x.text && x.text.trim());
   return b ? b.text.trim().split('\n')[0] : '';
@@ -316,12 +319,19 @@ export function toMarkdown(n) {
   let num = 0;
   if (n.title) out.push(`# ${n.title}`, '');
   for (const b of n.blocks || []) {
-    const t = b.text || '';
+    const pad = '  '.repeat(b.indent || 0);
+    const t = pad + (b.text || '');
     num = b.type === 'number' ? num + 1 : 0;
     switch (b.type) {
       case 'h1': out.push(`## ${t}`); break;
       case 'h2': out.push(`### ${t}`); break;
-      case 'bullet': out.push(`- ${t}`); break;
+      case 'bullet': out.push(`${pad}- ${b.text || ''}`); break;
+      case 'toggle': out.push(`${pad}- ▸ ${b.text || ''}`); break;
+      case 'table': {
+        const rows = b.rows || [];
+        rows.forEach((r, i) => { out.push(`| ${r.join(' | ')} |`); if (i === 0) out.push(`| ${r.map(() => '---').join(' | ')} |`); });
+        break;
+      }
       case 'number': out.push(`${num}. ${t}`); break;
       case 'callout': out.push(`> ${b.icon || '💡'} ${t}`); break;
       case 'page': { const p = getNote(b.page_id); out.push(`[${(p && p.title) || '제목 없음'}]`); break; }

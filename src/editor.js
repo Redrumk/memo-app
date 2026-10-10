@@ -2,7 +2,7 @@
 import { el, toast, actionSheet } from './ui.js';
 import { newBlock } from './store.js';
 
-const TEXT_TYPES = new Set(['p', 'h1', 'h2', 'bullet', 'number', 'todo', 'quote', 'callout']);
+const TEXT_TYPES = new Set(['p', 'h1', 'h2', 'bullet', 'number', 'todo', 'quote', 'callout', 'toggle']);
 const LIST_TYPES = new Set(['bullet', 'number', 'todo']);
 
 export const BLOCK_TYPES = [
@@ -13,18 +13,20 @@ export const BLOCK_TYPES = [
   { type: 'bullet', label: '목록', hint: '글머리 기호', icon: '•', keys: ['list', 'bullet', 'ul', '목록'] },
   { type: 'number', label: '번호 목록', hint: '1. 2. 3.', icon: '1.', keys: ['number', 'ol', 'num', '번호'] },
   { type: 'todo', label: '체크리스트', hint: '할 일', icon: '☐', keys: ['todo', 'check', '체크', '할일'] },
+  { type: 'toggle', label: '토글', hint: '접었다 펴는 목록', icon: '▸', keys: ['toggle', '토글', '접기'] },
+  { type: 'table', label: '표', hint: '간단한 표', icon: '▦', keys: ['table', '표'] },
   { type: 'quote', label: '인용', hint: '인용문', icon: '❝', keys: ['quote', '인용'] },
   { type: 'callout', label: '콜아웃', hint: '아이콘이 있는 강조 상자', icon: '💡', keys: ['callout', 'note', '콜아웃', '강조'] },
   { type: 'divider', label: '구분선', hint: '가로줄', icon: '—', keys: ['divider', 'hr', 'line', '구분'] },
   { type: 'image', label: '이미지', hint: '사진 첨부', icon: '▣', keys: ['image', 'img', 'photo', '이미지', '사진'] },
 ];
 
-const TOOLBAR = [['page', '페이지'], ['p', '본문'], ['h1', '제목'], ['h2', '소제목'], ['bullet', '목록'], ['number', '번호'], ['todo', '체크'], ['quote', '인용'], ['callout', '콜아웃'], ['divider', '구분선'], ['image', '사진']];
+const TOOLBAR = [['page', '페이지'], ['p', '본문'], ['h1', '제목'], ['h2', '소제목'], ['bullet', '목록'], ['number', '번호'], ['todo', '체크'], ['toggle', '토글'], ['table', '표'], ['quote', '인용'], ['callout', '콜아웃'], ['divider', '구분선'], ['image', '사진']];
 
-const PLACEHOLDER = { p: "입력하거나 '/'로 블록 선택", h1: '제목', h2: '소제목', bullet: '목록', number: '목록', todo: '할 일', quote: '인용', callout: '내용 입력' };
+const PLACEHOLDER = { p: "입력하거나 '/'로 블록 선택", h1: '제목', h2: '소제목', bullet: '목록', number: '목록', todo: '할 일', quote: '인용', callout: '내용 입력', toggle: '토글' };
 
 const SHORTCUTS = [
-  [/^#\s/, 'h1'], [/^##\s/, 'h2'], [/^[-*•]\s/, 'bullet'], [/^1[.)]\s/, 'number'], [/^\[[\sxX]?\]\s/, 'todo'], [/^>\s/, 'quote'],
+  [/^#\s/, 'h1'], [/^##\s/, 'h2'], [/^[-*•]\s/, 'bullet'], [/^1[.)]\s/, 'number'], [/^\[[\sxX]?\]\s/, 'todo'], [/^>\s/, 'toggle'], [/^"\s/, 'quote'],
 ];
 
 const EDITABLE = (() => {
@@ -116,6 +118,66 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
   const pageTitle = (p) => (p && !p.deleted ? (p.title || '').trim() || '제목 없음' : '삭제된 페이지');
   function buildRow(b) {
     const row = el('div', { class: `block block-${b.type}`, 'data-id': b.id });
+    if (b.indent) row.style.setProperty('--indent', b.indent);
+    if (b.type === 'table') {
+      if (!Array.isArray(b.rows) || !b.rows.length) b.rows = [['', ''], ['', '']];
+      const table = el('table', { class: 'tbl' });
+      b.rows.forEach((r, ri) => {
+        const tr = el('tr');
+        r.forEach((c, ci) => {
+          const cell = el(ri === 0 ? 'th' : 'td', { contenteditable: readOnly ? 'false' : EDITABLE, 'data-r': ri, 'data-c': ci, spellcheck: 'false' });
+          cell.textContent = c || '';
+          tr.append(cell);
+        });
+        table.append(tr);
+      });
+      const cellOf = (e) => e.target.closest && e.target.closest('[data-r]');
+      const go = (r, c) => {
+        if (r >= b.rows.length) { b.rows.push(new Array(b.rows[0].length).fill('')); replaceRow(b); save(); }
+        focusCell(b.id, r, c);
+      };
+      table.addEventListener('input', (e) => {
+        const td = cellOf(e); if (!td) return;
+        if (td.textContent === '' && td.firstChild) td.textContent = '';
+        b.rows[+td.dataset.r][+td.dataset.c] = clean(td.textContent); save();
+      });
+      table.addEventListener('beforeinput', (e) => {
+        if (e.inputType === 'insertParagraph' || e.inputType === 'insertLineBreak') {
+          e.preventDefault(); const td = cellOf(e); if (td) go(+td.dataset.r + 1, +td.dataset.c);
+        }
+      });
+      table.addEventListener('keydown', (e) => {
+        if (e.isComposing || e.keyCode === 229 || e.key !== 'Tab') return;
+        const td = cellOf(e); if (!td) return;
+        e.preventDefault(); e.stopPropagation();
+        const cols = b.rows[0].length;
+        let r = +td.dataset.r; let c = +td.dataset.c + (e.shiftKey ? -1 : 1);
+        if (c >= cols) { c = 0; r += 1; }
+        if (c < 0) { c = cols - 1; r -= 1; }
+        if (r >= 0) go(r, c);
+      });
+      row.append(el('div', { class: 'table-wrap' }, table));
+      if (!readOnly) {
+        const act = (label, fn) => { const bt = el('button', { type: 'button' }, label); bt.addEventListener('mousedown', (e) => e.preventDefault()); bt.addEventListener('click', fn); return bt; };
+        row.append(el('div', { class: 'tbl-actions' },
+          act('+ 행', () => { b.rows.push(new Array(b.rows[0].length).fill('')); replaceRow(b); focusCell(b.id, b.rows.length - 1, 0); save(); }),
+          act('+ 열', () => { b.rows.forEach((r) => r.push('')); replaceRow(b); focusCell(b.id, 0, b.rows[0].length - 1); save(); }),
+          act('− 행', () => { if (b.rows.length > 1) { b.rows.pop(); replaceRow(b); save(); } }),
+          act('− 열', () => { if (b.rows[0].length > 1) { b.rows.forEach((r) => r.pop()); replaceRow(b); save(); } })));
+      }
+      return row;
+    }
+    if (b.type === 'toggle') {
+      const open = b.open !== false;
+      const tg = el('button', { type: 'button', class: 'toggle-btn' + (open ? ' open' : ''), 'aria-label': open ? '접기' : '펼치기', contenteditable: 'false' }, '▶');
+      tg.addEventListener('mousedown', (e) => e.preventDefault());
+      tg.addEventListener('click', () => {
+        b.open = b.open === false;
+        tg.classList.toggle('open', b.open); tg.setAttribute('aria-label', b.open ? '접기' : '펼치기');
+        renumber(); save();
+      });
+      row.append(tg);
+    }
     if (b.type === 'page') {
       row.tabIndex = 0;
       const p = hooks.getPage ? hooks.getPage(b.page_id) : null;
@@ -165,12 +227,45 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
   }
 
   // 번호 목록: 연속된 번호 블록마다 1부터 다시 센다
+  // 들여쓰기 기준으로 번호 매기기, 목록 기호, 접힌 토글 아래 블록 숨기기
   function renumber() {
-    let n = 0;
-    for (const row of blocksEl.children) {
-      if (row.classList.contains('block-number')) { n += 1; const m = row.querySelector('.num-mark'); if (m) m.textContent = `${n}.`; }
-      else n = 0;
+    const rows = new Map([...blocksEl.children].map((r) => [r.dataset.id, r]));
+    const counters = [];
+    let hideBelow = null;
+    for (const b of blocks()) {
+      const row = rows.get(b.id); if (!row) continue;
+      const ind = b.indent || 0;
+      if (hideBelow !== null && ind <= hideBelow) hideBelow = null;
+      row.hidden = hideBelow !== null;
+      if (!row.hidden && b.type === 'toggle' && b.open === false) hideBelow = ind;
+      counters.length = Math.min(counters.length, ind + 1);
+      if (b.type === 'number') {
+        counters[ind] = (counters[ind] || 0) + 1;
+        const m = row.querySelector('.num-mark'); if (m) m.textContent = `${counters[ind]}.`;
+      } else counters[ind] = 0;
+      if (b.type === 'bullet') { const d = row.querySelector('.bullet-dot'); if (d) d.textContent = ['•', '◦', '▪'][ind % 3]; }
     }
+  }
+  function focusCell(id, r, c) {
+    const td = rowOf(id)?.querySelector(`[data-r="${r}"][data-c="${c}"]`);
+    if (!td) return;
+    td.focus(); setCaret(td, td.textContent.length); activeId = id; updateToolbar();
+  }
+  function indentBlock(id, dir) {
+    const i = idx(id); const b = blocks()[i]; if (!b) return false;
+    const cur = b.indent || 0;
+    if (dir > 0) {
+      const prev = blocks()[i - 1]; if (!prev) return false;
+      if (cur >= Math.min(4, (prev.indent || 0) + 1)) return false;
+      b.indent = cur + 1;
+    } else {
+      if (!cur) return false;
+      b.indent = cur - 1;
+    }
+    const t = textOf(id);
+    const off = t && document.activeElement === t ? caretOffset(t) : 'end';
+    replaceRow(b); focusBlock(id, off); save();
+    return true;
   }
   function render() {
     blocksEl.textContent = '';
@@ -221,6 +316,15 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
   function setType(id, type, toggle = false) {
     const b = find(id); if (!b) return;
     if (type === 'image') { pickImage(id); return; }
+    if (type === 'table') {
+      const rows = [['', '', ''], ['', '', ''], ['', '', '']];
+      let tid = id;
+      if (TEXT_TYPES.has(b.type) && !(b.text || '').trim()) { b.type = 'table'; b.rows = rows; b.text = ''; delete b.checked; replaceRow(b); }
+      else tid = insertAfter(id, { ...newBlock('table'), rows }).id;
+      if (!blocks()[idx(tid) + 1]) insertAfter(tid, newBlock());
+      focusCell(tid, 0, 0); save();
+      return;
+    }
     if (type === 'page') {
       if (!hooks.createSubpage || !note) return;
       const child = hooks.createSubpage(note.id);
@@ -278,12 +382,25 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
     const listType = LIST_TYPES.has(b.type) ? b.type : 'p';
     if (off === 0 && text) {
       const nb = newBlock(listType); if (listType === 'todo') nb.checked = false;
+      if (b.indent) nb.indent = b.indent;
       insertBefore(id, nb); b.text = text; focusBlock(id, 'start'); save();
       return;
     }
     b.text = text.slice(0, off); t.textContent = b.text;
-    const nb = newBlock(listType, text.slice(off)); if (listType === 'todo') nb.checked = false;
-    insertAfter(id, nb); focusBlock(nb.id, 'start'); save();
+    let nType = listType; let nIndent = b.indent || 0; let afterId = id;
+    if (b.type === 'toggle') {
+      if (b.open !== false) { nType = 'p'; nIndent += 1; }
+      else {
+        // 접힌 토글: 숨은 내용 다음에 새 토글을 만든다
+        nType = 'toggle';
+        let j = idx(id) + 1;
+        while (j < blocks().length && (blocks()[j].indent || 0) > (b.indent || 0)) j += 1;
+        afterId = blocks()[j - 1].id;
+      }
+    }
+    const nb = newBlock(nType, text.slice(off)); if (nType === 'todo') nb.checked = false;
+    if (nIndent) nb.indent = Math.min(4, nIndent);
+    insertAfter(afterId, nb); focusBlock(nb.id, 'start'); save();
   }
 
   // 블록 위/아래 이동
@@ -373,7 +490,8 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
   // 줄 맨 앞에서 지우기: 형식 해제 → 위 블록과 합치기
   function backspaceAtStart(id) {
     const i = idx(id); const b = blocks()[i]; if (!b) return false;
-    if (b.type !== 'p') { b.type = 'p'; delete b.checked; replaceRow(b); focusBlock(id, 0); save(); return true; }
+    if (b.type !== 'p') { b.type = 'p'; delete b.checked; delete b.open; replaceRow(b); focusBlock(id, 0); save(); return true; }
+    if (b.indent) { b.indent -= 1; replaceRow(b); focusBlock(id, 0); save(); return true; }
     const prev = blocks()[i - 1]; if (!prev) return false;
     if (!TEXT_TYPES.has(prev.type)) { removeBlock(prev.id); save(); return true; }
     const plen = (prev.text || '').length;
@@ -536,6 +654,7 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
     const mod = e.metaKey || e.ctrlKey;
 
     if (mod && ['b', 'i', 'u'].includes(e.key.toLowerCase())) { e.preventDefault(); return; }
+    if (e.key === 'Tab') { e.preventDefault(); indentBlock(id, e.shiftKey ? -1 : 1); return; }
     if (e.key === 'Enter' && mod && b.type === 'todo') {
       e.preventDefault(); b.checked = !b.checked; replaceRow(b); focusBlock(id, off); save(); return;
     }
@@ -642,6 +761,12 @@ export function createEditor({ blocksEl, titleEl, toolbarEl, onChange, hooks = {
           const target = activeId && idx(activeId) >= 0 ? activeId : blocks()[blocks().length - 1]?.id;
           if (target) setType(target, type, true);
         },
+      }, label)));
+    }
+    for (const [dir, label, aria] of [[-1, '⇤', '내어쓰기'], [1, '⇥', '들여쓰기']]) {
+      toolbarEl.append(keep(el('button', {
+        type: 'button', class: 'tb-move', 'aria-label': aria, title: aria,
+        onclick: () => { if (note && !readOnly && activeId && idx(activeId) >= 0) indentBlock(activeId, dir); },
       }, label)));
     }
     for (const [dir, label, aria] of [[-1, '↑', '위로 이동'], [1, '↓', '아래로 이동']]) {
