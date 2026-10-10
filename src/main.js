@@ -509,7 +509,7 @@ function openSettings() {
                 { label: '이 기기에서 페이지를 지우고 로그아웃', value: 'wipe', danger: true },
               ], '지워도 서버에 올라간 페이지는 다시 로그인하면 돌아옵니다.');
               if (!how) return;
-              await sync.signOut(how === 'wipe');
+              try { await sync.signOut(how === 'wipe'); } catch (e) { alertDialog(e.message || String(e)); return; }
               draw(); toast('로그아웃했습니다');
             },
           }, '로그아웃'))));
@@ -726,4 +726,47 @@ function init() {
   }
 }
 
-store.init().then(init, (e) => { console.error(e); init(); });
+// ---------- 탭 하나만 쓰기: 두 탭이 동시에 저장하면 서로 덮어쓰므로 ----------
+const tabId = Math.random().toString(36).slice(2);
+const bc = 'BroadcastChannel' in window ? new BroadcastChannel('memo-tabs') : null;
+let isWriter = false;
+function tabBlocker(message, button, onClick) {
+  document.getElementById('tab-blocker')?.remove();
+  document.body.append(el('div', { id: 'tab-blocker', class: 'tab-blocker', role: 'alertdialog', 'aria-modal': 'true' },
+    el('div', { class: 'tab-blocker-box' },
+      el('p', {}, message),
+      el('button', { class: 'btn primary', type: 'button', onclick: onClick }, button))));
+}
+function takeOver() {
+  if (bc) bc.postMessage({ type: 'takeover', id: tabId });
+  setTimeout(() => location.reload(), 400);
+}
+async function claimTab() {
+  if (!bc) return true;
+  let other = false;
+  bc.onmessage = (e) => {
+    const m = e.data || {};
+    if (m.id === tabId) return;
+    if (m.type === 'hello' && isWriter) bc.postMessage({ type: 'here', id: tabId });
+    if (m.type === 'here') other = true;
+    if (m.type === 'takeover' && isWriter) {
+      isWriter = false;
+      store.flush(); store.setWritable(false);
+      tabBlocker('다른 탭에서 Memo를 열어서, 이 탭은 잠시 멈췄습니다.', '이 탭에서 다시 쓰기', takeOver);
+    }
+  };
+  bc.postMessage({ type: 'hello', id: tabId });
+  await new Promise((r) => setTimeout(r, 250));
+  return !other;
+}
+
+(async () => {
+  if (!(await claimTab())) {
+    tabBlocker('Memo가 다른 탭에서 열려 있습니다. 두 탭에서 동시에 쓰면 내용이 섞일 수 있어 한 곳에서만 씁니다.', '여기서 열기', takeOver);
+    return;
+  }
+  isWriter = true;
+  try { await store.init(); } catch (e) { console.error(e); }
+  init();
+  store.gcImages().catch((e) => console.warn(e));
+})();

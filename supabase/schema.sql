@@ -114,3 +114,46 @@ drop policy if exists links_all on public.share_links;
 create policy links_all on public.share_links for all to authenticated
   using (owner_id = auth.uid())
   with check (owner_id = auth.uid() and exists (select 1 from public.folders f where f.id = folder_id and f.owner_id = auth.uid()));
+
+-- ================= 2단계 보강 (여러 번 실행해도 안전) =================
+
+-- 수정 시각은 서버 시계로 기록한다 (기기마다 시계가 달라도 순서가 꼬이지 않게)
+create or replace function public.touch_updated_at()
+returns trigger language plpgsql as $$
+begin
+  new.updated_at := now();
+  return new;
+end $$;
+drop trigger if exists folders_touch on public.folders;
+create trigger folders_touch before insert or update on public.folders for each row execute function public.touch_updated_at();
+drop trigger if exists notes_touch on public.notes;
+create trigger notes_touch before insert or update on public.notes for each row execute function public.touch_updated_at();
+
+-- 소유자가 지운 섹션은 공유받은 사람이 되살릴 수 없다
+create or replace function public.guard_folder_delete()
+returns trigger language plpgsql security definer set search_path = public as $$
+begin
+  if old.deleted and not new.deleted and old.owner_id <> auth.uid() then
+    new.deleted := true;
+  end if;
+  return new;
+end $$;
+drop trigger if exists folders_guard on public.folders;
+create trigger folders_guard before update on public.folders for each row execute function public.guard_folder_delete();
+
+-- 사진: 기기 사이에 사진을 옮기는 표. id는 사진 내용으로 만든 값
+create table if not exists public.images (
+  id         text primary key,
+  owner_id   uuid not null default auth.uid() references auth.users(id) on delete cascade,
+  note_id    uuid,
+  data       text not null,
+  created_at timestamptz not null default now()
+);
+alter table public.images enable row level security;
+drop policy if exists images_select on public.images;
+drop policy if exists images_insert on public.images;
+create policy images_select on public.images for select to authenticated
+  using (owner_id = auth.uid() or exists (
+    select 1 from public.notes n
+    where n.id = images.note_id and (n.owner_id = auth.uid() or (n.folder_id is not null and public.can_access_folder(n.folder_id)))));
+create policy images_insert on public.images for insert to authenticated with check (owner_id = auth.uid());

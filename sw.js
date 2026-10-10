@@ -1,5 +1,5 @@
 // 오프라인에서도 열리도록 앱 파일을 캐시한다. 온라인이면 항상 최신 파일을 먼저 받는다.
-const CACHE = 'memo-v13';
+const CACHE = 'memo-v14';
 const SHELL = [
   './', './index.html', './config.js', './manifest.webmanifest',
   './src/styles.css', './src/main.js', './src/store.js', './src/editor.js', './src/sync.js', './src/ui.js', './src/rich.js', './src/vendor/supabase.js',

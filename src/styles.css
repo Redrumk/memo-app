@@ -530,3 +530,8 @@ body:has(.overlay) .toast { top: calc(72px + env(safe-area-inset-top)); }
 .backup-banner p { margin: 0 0 8px; }
 .backup-banner .btn { padding: 8px 12px; font-size: 14px; min-height: 40px; }
 @media (max-width: 759px) { .backup-banner { margin-bottom: 76px; } }
+
+/* ---------- one tab at a time ---------- */
+.tab-blocker { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: var(--bg); }
+.tab-blocker-box { max-width: 360px; display: grid; gap: 16px; text-align: center; font-size: 16px; line-height: 1.6; }
+.tab-blocker-box p { margin: 0; }
