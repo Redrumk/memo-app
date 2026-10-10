@@ -130,6 +130,18 @@ export function updateNote(id, patch, kind = 'data') {
   const n = getNote(id); if (!n) return;
   Object.assign(n, patch); touch(n); commit(kind, [id]);
 }
+export function duplicateNote(id) {
+  const src = getNote(id); if (!src) return null;
+  const t = now();
+  const n = {
+    ...strip(src), id: uid(), title: src.title ? `${src.title} 사본` : '', pinned: false, deleted: false,
+    owner_id: undefined, created_at: t, updated_at: t, dirty: true, synced: false,
+    blocks: (src.blocks || []).map((b) => ({ ...b, id: uid() })),
+  };
+  state.notes.push(n);
+  commit('data');
+  return n;
+}
 export function trashNote(id) { updateNote(id, { deleted: true }); }
 export function restoreNote(id) {
   const n = getNote(id); if (!n) return;
@@ -233,13 +245,16 @@ export function importData(obj) {
 
 export function toMarkdown(n) {
   const out = [];
+  let num = 0;
   if (n.title) out.push(`# ${n.title}`, '');
   for (const b of n.blocks || []) {
     const t = b.text || '';
+    num = b.type === 'number' ? num + 1 : 0;
     switch (b.type) {
       case 'h1': out.push(`## ${t}`); break;
       case 'h2': out.push(`### ${t}`); break;
       case 'bullet': out.push(`- ${t}`); break;
+      case 'number': out.push(`${num}. ${t}`); break;
       case 'todo': out.push(`- [${b.checked ? 'x' : ' '}] ${t}`); break;
       case 'quote': out.push(`> ${t}`); break;
       case 'divider': out.push('---'); break;

@@ -133,6 +133,13 @@ export async function createShareLink(folderId) {
   return `${location.origin}${location.pathname}?join=${data.token}`;
 }
 
+export async function leaveFolder(folderId) {
+  await waitIdle();
+  const { error } = await sb.from('folder_members').delete().eq('folder_id', folderId).eq('user_id', currentUser.id);
+  if (error) throw error;
+  await syncNow();
+}
+
 export async function joinShare(token) {
   await waitIdle();
   const { data, error } = await sb.rpc('join_share', { t: token });

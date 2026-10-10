@@ -82,7 +82,8 @@ function renderMeta() {
   const n = ui.noteId && store.getNote(ui.noteId);
   if (!n) return;
   const f = store.getFolder(n.folder_id);
-  $('#note-meta').textContent = [formatFull(n.updated_at), f?.name, f?.shared ? '공유 폴더' : null].filter(Boolean).join(' · ');
+  const chars = store.noteText(n).replace(/\s/g, '').length;
+  $('#note-meta').textContent = [formatFull(n.updated_at), f?.name, f?.shared ? '공유 폴더' : null, `${chars.toLocaleString('ko-KR')}자`].filter(Boolean).join(' · ');
 }
 
 function showEditor(n) {
@@ -187,13 +188,19 @@ async function folderMenu() {
   }
   const f = store.getFolder(ui.folderId); if (!f) return;
   const acts = [{ label: '이름 변경', value: 'rename' }, { label: '공유 링크 만들기', value: 'share' }];
-  if (!f.shared) acts.push({ label: '폴더 삭제', value: 'delete', danger: true });
+  if (f.shared) acts.push({ label: '공유 폴더 나가기', value: 'leave', danger: true });
+  else acts.push({ label: '폴더 삭제', value: 'delete', danger: true });
   const a = await actionSheet(f.name, acts);
   if (a === 'rename') {
     const name = await promptDialog('폴더 이름 변경', f.name, { ok: '저장' });
     if (name && name.trim()) store.renameFolder(f.id, name.trim());
   } else if (a === 'share') {
     shareFolder(f);
+  } else if (a === 'leave') {
+    if (await confirmDialog(`'${f.name}' 공유 폴더에서 나갈까요? 이 기기와 내 계정에서 더 이상 보이지 않습니다.`, { ok: '나가기', danger: true })) {
+      try { await sync.leaveFolder(f.id); ui.folderId = 'all'; renderAll(); toast('공유 폴더에서 나갔습니다'); }
+      catch (e) { alertDialog(`나가지 못했습니다.\n${e.message || e}`); }
+    }
   } else if (a === 'delete') {
     if (await confirmDialog(`'${f.name}' 폴더를 삭제할까요? 안의 메모는 '최근 삭제된 항목'으로 이동합니다.`, { ok: '삭제', danger: true })) {
       store.deleteFolder(f.id); ui.folderId = 'all'; renderAll();
@@ -233,10 +240,12 @@ async function noteMenu() {
   const a = await actionSheet(null, [
     { label: n.pinned ? '고정 해제' : '맨 위에 고정', value: 'pin' },
     { label: '다른 폴더로 이동', value: 'move' },
+    { label: '복제', value: 'dup' },
     { label: '텍스트로 내보내기', value: 'export' },
     { label: '삭제', value: 'delete', danger: true },
   ]);
   if (a === 'pin') store.updateNote(n.id, { pinned: !n.pinned });
+  else if (a === 'dup') { const c = store.duplicateNote(n.id); if (c) { openNote(c.id, { keepView: true }); toast('복제했습니다'); } }
   else if (a === 'move') {
     const fs = store.listFolders().filter((f) => f.id !== n.folder_id);
     if (!fs.length) { toast('이동할 다른 폴더가 없습니다'); return; }
